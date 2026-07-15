@@ -123,7 +123,13 @@ export async function POST(request: Request): Promise<Response> {
           send({ type: 'document', hwpBase64: base64 });
         }
       } catch (err) {
-        send({ type: 'error', message: err instanceof Error ? err.message : String(err) });
+        const raw = err instanceof Error ? err.message : String(err);
+        // 인증 관련 오류면 구독 설정법을 덧붙여 안내(특히 갓 클론한 사용자).
+        const isAuth = /auth|login|token|oauth|credential|api[_ ]?key|unauthor|not logged/i.test(raw);
+        const message = isAuth
+          ? `${raw}\n\n구독(Claude Pro/Max) 인증이 필요합니다. \`claude setup-token\` 으로 발급한 토큰을 .env.local 의 CLAUDE_CODE_OAUTH_TOKEN 에 넣거나 Claude Code 에 로그인하세요. (.env.example 참고)`
+          : raw;
+        send({ type: 'error', message });
       } finally {
         holder.doc.free?.();
         controller.close();
