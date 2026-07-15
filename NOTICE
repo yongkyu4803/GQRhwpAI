@@ -5,7 +5,8 @@ This product includes software from the rhwp project:
   Licensed under the MIT License.
   https://github.com/edwardkim/rhwp
 
-The npm packages @rhwp/core and @rhwp/editor are used as dependencies.
-The bundled WebAssembly binary (public/rhwp_bg.wasm) is redistributed under
-the same MIT License; the full license text ships in the @rhwp/core package
-(node_modules/@rhwp/core/LICENSE).
+The npm packages @rhwp/core and @rhwp/editor are used as dependencies and are
+NOT redistributed in this repository. The WebAssembly binary (rhwp_bg.wasm) is
+fetched from the @rhwp/core npm package at install time (see copy-wasm.mjs,
+run via the "postinstall" script) and is not committed here. The full MIT
+license text ships in the @rhwp/core package (node_modules/@rhwp/core/LICENSE).

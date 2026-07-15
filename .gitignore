@@ -45,3 +45,6 @@ next-env.d.ts
 
 # Claude Code 로컬 설정(머신별 권한 등)은 커밋 제외
 .claude/settings.local.json
+
+# rhwp WASM 은 커밋(재배포)하지 않고 postinstall(copy-wasm.mjs)로 node_modules 에서 복사
+/public/rhwp_bg.wasm
