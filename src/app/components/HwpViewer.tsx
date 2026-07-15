@@ -3,6 +3,7 @@
 import dynamic from 'next/dynamic';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { HwpEditorHandle } from './HwpEditor';
+import ChatPanel from './ChatPanel';
 
 type HwpDocumentType = {
   pageCount(): number;
@@ -49,6 +50,31 @@ function initWasm(): Promise<void> {
 function parseSvgWidth(svg: string): number {
   const m = svg.match(/<svg[^>]+width="([\d.]+)"/);
   return m ? parseFloat(m[1]) : 794;
+}
+
+// "1-3, 5, 8-10" 형식의 페이지 범위 문자열을 0-기반 인덱스 배열로 변환합니다.
+// pageCount가 0(편집 모드 등 미상)이면 범위 검사를 건너뛰고 형식만 검증합니다.
+// 형식 오류 시 { error }를, 성공 시 { pages }(정렬·중복 제거)를 반환합니다.
+function parsePageRange(text: string, pageCount: number): { pages?: number[]; error?: string } {
+  const indices = new Set<number>();
+  for (const part of text.split(',')) {
+    const token = part.trim();
+    if (!token) continue;
+    const range = token.match(/^(\d+)\s*-\s*(\d+)$/);
+    if (range) {
+      let a = parseInt(range[1], 10);
+      let b = parseInt(range[2], 10);
+      if (a > b) [a, b] = [b, a];
+      for (let p = a; p <= b; p++) indices.add(p - 1);
+    } else if (/^\d+$/.test(token)) {
+      indices.add(parseInt(token, 10) - 1);
+    } else {
+      return { error: `잘못된 페이지 범위: "${token}"` };
+    }
+  }
+  let pages = [...indices].filter(p => p >= 0).sort((x, y) => x - y);
+  if (pageCount > 0) pages = pages.filter(p => p < pageCount);
+  return { pages };
 }
 
 function isCrossOriginPickerError(error: unknown): boolean {
@@ -142,6 +168,105 @@ const ZOOM_MIN = 0.25;
 const ZOOM_MAX = 3;
 const THUMBNAIL_W = 120;
 
+// PDF 내보내기 버튼 + 페이지 범위 선택 팝오버.
+// totalPages가 0이면(편집 모드) 총 페이지를 알 수 없어 형식만 검증하고, 범위는 내보낼 때 클램프합니다.
+function PdfExportControl({
+  exporting,
+  exportProgress,
+  totalPages,
+  onExport,
+}: {
+  exporting: boolean;
+  exportProgress: number;
+  totalPages: number;
+  onExport: (rangeText: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [rangeMode, setRangeMode] = useState<'all' | 'range'>('all');
+  const [text, setText] = useState('');
+  const [error, setError] = useState('');
+
+  function submit() {
+    if (rangeMode === 'all') {
+      onExport('');
+      setOpen(false);
+      return;
+    }
+    if (!text.trim()) { setError('페이지 범위를 입력하세요.'); return; }
+    const { pages, error: parseError } = parsePageRange(text, totalPages);
+    if (parseError) { setError(parseError); return; }
+    if (!pages || pages.length === 0) { setError('선택한 페이지가 문서 범위를 벗어났습니다.'); return; }
+    setError('');
+    onExport(text);
+    setOpen(false);
+  }
+
+  return (
+    <div className="relative">
+      <button
+        onClick={() => setOpen(o => !o)}
+        disabled={exporting}
+        className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-full border border-zinc-300 dark:border-zinc-600 hover:bg-zinc-50 dark:hover:bg-zinc-700 disabled:opacity-50 transition-colors"
+        title="PDF로 내보내기"
+      >
+        {exporting ? (
+          <>
+            <svg className="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
+              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
+            </svg>
+            {exportProgress}%
+          </>
+        ) : (
+          <>
+            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+            </svg>
+            PDF
+          </>
+        )}
+      </button>
+
+      {open && !exporting && (
+        <>
+          {/* 바깥 클릭으로 닫기 */}
+          <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
+          <div className="absolute right-0 mt-2 z-20 w-60 p-3 rounded-xl border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 shadow-lg flex flex-col gap-2.5 text-zinc-700 dark:text-zinc-200">
+            <p className="text-xs font-semibold">PDF 내보내기</p>
+            <label className="flex items-center gap-2 text-xs cursor-pointer">
+              <input type="radio" checked={rangeMode === 'all'} onChange={() => { setRangeMode('all'); setError(''); }} />
+              전체 페이지{totalPages > 0 ? ` (${totalPages})` : ''}
+            </label>
+            <label className="flex items-center gap-2 text-xs cursor-pointer">
+              <input type="radio" checked={rangeMode === 'range'} onChange={() => setRangeMode('range')} />
+              페이지 범위
+            </label>
+            {rangeMode === 'range' && (
+              <input
+                type="text"
+                value={text}
+                autoFocus
+                onChange={e => { setText(e.target.value); setError(''); }}
+                onKeyDown={e => { if (e.key === 'Enter') submit(); }}
+                placeholder="예: 1-3, 5, 8-10"
+                className="px-2 py-1.5 text-xs rounded-md border border-zinc-300 dark:border-zinc-600 bg-white dark:bg-zinc-900 focus:outline-none focus:ring-2 focus:ring-blue-400"
+              />
+            )}
+            {error && <p className="text-[11px] text-red-500">{error}</p>}
+            <button
+              onClick={submit}
+              className="mt-0.5 px-3 py-1.5 text-xs font-medium rounded-md bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-900 hover:opacity-80 transition-opacity"
+            >
+              내보내기
+            </button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 const HwpEditorDynamic = dynamic(() => import('./HwpEditor'), {
   ssr: false,
   loading: () => (
@@ -167,6 +292,7 @@ export default function HwpViewer() {
   const [mode, setMode] = useState<'viewer' | 'editor'>('editor');
   const [editorReady, setEditorReady] = useState(false);
   const [docKey, setDocKey] = useState(0);
+  const [chatOpen, setChatOpen] = useState(false);
   // 랜딩 편집기에 빈 문서를 먼저 준비한 뒤 마운트하기 위한 플래그
   const [booted, setBooted] = useState(false);
 
@@ -175,6 +301,26 @@ export default function HwpViewer() {
   const thumbRefs = useRef<(HTMLButtonElement | null)[]>([]);
   const fileBufferRef = useRef<Uint8Array | null>(null);
   const editorRef = useRef<HwpEditorHandle | null>(null);
+
+  // AI 채팅에 넘길 현재 문서 바이트. 편집 모드면 에디터의 최신 상태를 export 하고,
+  // 아니면 열려 있는 파일 버퍼를 사용합니다.
+  const getDocBytes = useCallback(async (): Promise<Uint8Array | null> => {
+    if (mode === 'editor' && editorReady) {
+      const bytes = await editorRef.current?.exportHwp();
+      if (bytes && bytes.length > 0) return bytes;
+    }
+    return fileBufferRef.current;
+  }, [mode, editorReady]);
+
+  // AI 편집 결과(HWP 바이트)를 에디터에 반영합니다.
+  const applyEdit = useCallback(async (bytes: Uint8Array): Promise<boolean> => {
+    fileBufferRef.current = bytes;
+    if (mode === 'editor' && editorReady && editorRef.current) {
+      await editorRef.current.loadBytes(bytes, fileName);
+      return true;
+    }
+    return false;
+  }, [mode, editorReady, fileName]);
 
   // 랜딩 시 빈 문서를 미리 만들어 두고 편집기를 마운트합니다.
   // (문서 없이 편집기를 띄우면 메뉴/툴바가 비활성 상태로 남습니다.)
@@ -418,39 +564,82 @@ export default function HwpViewer() {
     if (file) loadFile(file);
   }
 
-  async function exportPdf() {
+  // 지정한 페이지 인덱스들을 캔버스로 렌더링해 PDF로 저장합니다.
+  // 보기 모드(docRef)와 편집 모드(임시 doc) 양쪽에서 공용으로 사용합니다.
+  async function buildPdf(doc: HwpDocumentType, pageIndices: number[], baseName: string) {
+    const { jsPDF } = await import('jspdf');
+    const scale = 2;
+    const dpi = 96 * scale;
+    let pdf: InstanceType<typeof jsPDF> | null = null;
+
+    for (let n = 0; n < pageIndices.length; n++) {
+      const i = pageIndices[n];
+      const canvas = document.createElement('canvas');
+      doc.renderPageToCanvas(i, canvas, scale);
+      const mmW = (canvas.width / dpi) * 25.4;
+      const mmH = (canvas.height / dpi) * 25.4;
+      const imgData = canvas.toDataURL('image/jpeg', 0.95);
+
+      if (!pdf) {
+        pdf = new jsPDF({
+          orientation: mmW > mmH ? 'landscape' : 'portrait',
+          unit: 'mm',
+          format: [mmW, mmH],
+        });
+      } else {
+        pdf.addPage([mmW, mmH], mmW > mmH ? 'landscape' : 'portrait');
+      }
+      pdf.addImage(imgData, 'JPEG', 0, 0, mmW, mmH);
+      setExportProgress(Math.round(((n + 1) / pageIndices.length) * 100));
+    }
+    pdf?.save(`${(baseName || '새 문서').replace(/\.(hwpx?)$/i, '')}.pdf`);
+  }
+
+  // 빈 rangeText는 전체 페이지를 의미합니다. 범위가 주어졌으나 유효 페이지가 없으면 null을 반환합니다.
+  function resolvePages(rangeText: string, pageCount: number): number[] | null {
+    const allPages = Array.from({ length: pageCount }, (_, i) => i);
+    if (!rangeText.trim()) return allPages;
+    const { pages } = parsePageRange(rangeText, pageCount);
+    return pages && pages.length ? pages : null;
+  }
+
+  // 보기 모드: 이미 로드된 문서를 PDF로 내보냅니다. rangeText가 비면 전체 페이지.
+  async function exportPdf(rangeText: string) {
     if (!docRef.current || exporting) return;
+    const pages = resolvePages(rangeText, totalPages);
+    if (!pages) { alert('선택한 페이지가 문서 범위를 벗어났습니다.'); return; }
     setExporting(true);
     setExportProgress(0);
     try {
-      const { jsPDF } = await import('jspdf');
-      const scale = 2;
-      const dpi = 96 * scale;
-      let pdf: InstanceType<typeof jsPDF> | null = null;
-
-      for (let i = 0; i < totalPages; i++) {
-        const canvas = document.createElement('canvas');
-        docRef.current.renderPageToCanvas(i, canvas, scale);
-        const mmW = (canvas.width / dpi) * 25.4;
-        const mmH = (canvas.height / dpi) * 25.4;
-        const imgData = canvas.toDataURL('image/jpeg', 0.95);
-
-        if (!pdf) {
-          pdf = new jsPDF({
-            orientation: mmW > mmH ? 'landscape' : 'portrait',
-            unit: 'mm',
-            format: [mmW, mmH],
-          });
-        } else {
-          pdf.addPage([mmW, mmH], mmW > mmH ? 'landscape' : 'portrait');
-        }
-        pdf.addImage(imgData, 'JPEG', 0, 0, mmW, mmH);
-        setExportProgress(Math.round(((i + 1) / totalPages) * 100));
-      }
-      pdf!.save(`${fileName.replace(/\.(hwpx?)$/i, '')}.pdf`);
+      await buildPdf(docRef.current, pages, fileName);
     } catch (e: any) {
       alert('PDF 내보내기 실패: ' + (e?.message ?? '알 수 없는 오류'));
     } finally {
+      setExporting(false);
+      setExportProgress(0);
+    }
+  }
+
+  // 편집 모드: 현재 편집 내용을 HWP 버퍼로 추출한 뒤 임시 문서로 파싱해 PDF로 내보냅니다.
+  async function exportPdfFromEditor(rangeText: string) {
+    if (exporting) return;
+    setExporting(true);
+    setExportProgress(0);
+    let tempDoc: HwpDocumentType | null = null;
+    try {
+      const buffer = await editorRef.current?.exportHwp();
+      if (!buffer?.length) throw new Error('편집 내용을 가져올 수 없습니다.');
+      await initWasm();
+      const { HwpDocument } = await import('@rhwp/core');
+      tempDoc = new (HwpDocument as any)(buffer) as HwpDocumentType;
+      // 페이지 수는 버퍼를 파싱한 뒤에야 알 수 있어, 여기서 범위를 해석합니다.
+      const pages = resolvePages(rangeText, tempDoc.pageCount());
+      if (!pages) { alert('선택한 페이지가 문서 범위를 벗어났습니다.'); return; }
+      await buildPdf(tempDoc, pages, fileName);
+    } catch (e: any) {
+      alert('PDF 내보내기 실패: ' + (e?.message ?? '알 수 없는 오류'));
+    } finally {
+      tempDoc?.free();
       setExporting(false);
       setExportProgress(0);
     }
@@ -515,36 +704,24 @@ export default function HwpViewer() {
             </span>
 
             {/* PDF export */}
-            <button
-              onClick={exportPdf}
-              disabled={exporting}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-full border border-zinc-300 dark:border-zinc-600 hover:bg-zinc-50 dark:hover:bg-zinc-700 disabled:opacity-50 transition-colors"
-              title="PDF로 내보내기"
-            >
-              {exporting ? (
-                <>
-                  <svg className="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
-                  </svg>
-                  {exportProgress}%
-                </>
-              ) : (
-                <>
-                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                      d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-                  </svg>
-                  PDF
-                </>
-              )}
-            </button>
+            <PdfExportControl
+              exporting={exporting}
+              exportProgress={exportProgress}
+              totalPages={totalPages}
+              onExport={exportPdf}
+            />
           </>
         )}
 
         {/* Editor-only controls: save buttons */}
         {mode === 'editor' && editorReady && (
           <div className="flex items-center gap-2">
+            <PdfExportControl
+              exporting={exporting}
+              exportProgress={exportProgress}
+              totalPages={0}
+              onExport={exportPdfFromEditor}
+            />
             <button
               onClick={() => handleSave('hwp')}
               className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-full border border-zinc-300 dark:border-zinc-600 hover:bg-zinc-50 dark:hover:bg-zinc-700 transition-colors"
@@ -599,6 +776,26 @@ export default function HwpViewer() {
                 보기
               </>
             )}
+          </button>
+        )}
+
+        {/* AI 채팅 토글 — 문서가 준비된 경우에만 */}
+        {((mode === 'editor' && editorReady) || (mode === 'viewer' && isReady)) && (
+          <button
+            onClick={() => setChatOpen(o => !o)}
+            title="AI 편집 패널"
+            className={`
+              flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-full transition-colors
+              ${chatOpen
+                ? 'bg-blue-600 text-white hover:bg-blue-700'
+                : 'border border-zinc-300 dark:border-zinc-600 hover:bg-zinc-50 dark:hover:bg-zinc-700'}
+            `}
+          >
+            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.86 9.86 0 01-4-.8L3 20l1.3-3.9A7.96 7.96 0 013 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+            </svg>
+            AI
           </button>
         )}
 
@@ -765,6 +962,11 @@ export default function HwpViewer() {
             </>
           )}
         </main>
+
+        {/* AI 채팅 패널 */}
+        {chatOpen && (
+          <ChatPanel getDocBytes={getDocBytes} onApplyEdit={applyEdit} docId={fileName} onClose={() => setChatOpen(false)} />
+        )}
       </div>
     </div>
   );

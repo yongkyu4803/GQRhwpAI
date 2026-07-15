@@ -1,3 +1,18 @@
+# GQRhwpAI
+
+한글(HWP/HWPX) 문서를 웹에서 보고 편집하며, **Claude AI 채팅으로 문서 작업을 돕는** Next.js 앱입니다.
+HWP 뷰어·에디터 엔진은 [rhwp](https://github.com/edwardkim/rhwp)(`@rhwp/core`·`@rhwp/editor`)를 사용하고,
+[Claude Agent SDK](https://code.claude.com/docs/en/agent-sdk)로 서버측 WASM 문서를 조작하는 커스텀 도구(텍스트·표·서식·정렬·셀 배경/테두리)를 제공합니다.
+
+AI 채팅 기능은 Claude 구독제(Pro/Max) 인증을 사용합니다 — `.env.example`를 `.env.local`로 복사한 뒤
+`claude setup-token`으로 발급한 `CLAUDE_CODE_OAUTH_TOKEN`을 채우세요.
+
+## Credits & License
+
+- HWP 엔진: [rhwp](https://github.com/edwardkim/rhwp) © Edward Kim, MIT License (see `NOTICE`).
+
+---
+
 This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
 
 ## Getting Started

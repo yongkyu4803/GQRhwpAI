@@ -6,6 +6,8 @@ import type { RhwpEditor } from '@rhwp/editor';
 export type HwpEditorHandle = {
   exportHwp(): Promise<Uint8Array>;
   exportHwpx(): Promise<Uint8Array>;
+  /** 주어진 HWP 바이트를 에디터에 다시 로드합니다 (AI 편집 결과 반영). */
+  loadBytes(bytes: Uint8Array, fileName?: string): Promise<void>;
 };
 
 type HwpEditorProps = {
@@ -57,6 +59,9 @@ function HwpEditor({ fileBuffer, fileName, onReady, ref }: HwpEditorProps) {
       editorInstanceRef.current?.exportHwp() ?? Promise.resolve(new Uint8Array(0)),
     exportHwpx: () =>
       editorInstanceRef.current?.exportHwpx() ?? Promise.resolve(new Uint8Array(0)),
+    loadBytes: async (bytes, name) => {
+      await editorInstanceRef.current?.loadFile(bytes, name ?? fileName);
+    },
   }));
 
   return <div ref={containerRef} className="flex-1 w-full h-full" style={{ minHeight: 0 }} />;

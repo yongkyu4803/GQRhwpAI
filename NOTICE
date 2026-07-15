@@ -1,0 +1,11 @@
+This product includes software from the rhwp project:
+
+  rhwp — HWP/HWPX viewer & editor (Rust + WebAssembly)
+  Copyright (c) 2025-2026 Edward Kim
+  Licensed under the MIT License.
+  https://github.com/edwardkim/rhwp
+
+The npm packages @rhwp/core and @rhwp/editor are used as dependencies.
+The bundled WebAssembly binary (public/rhwp_bg.wasm) is redistributed under
+the same MIT License; the full license text ships in the @rhwp/core package
+(node_modules/@rhwp/core/LICENSE).

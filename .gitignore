@@ -39,3 +39,9 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# 예시 env 는 커밋 허용
+!.env.example
+
+# Claude Code 로컬 설정(머신별 권한 등)은 커밋 제외
+.claude/settings.local.json
