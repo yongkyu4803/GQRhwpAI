@@ -260,7 +260,9 @@ export default function ChatPanel({ getDocBytes, onApplyEdit, docId, onClose }: 
             value={input}
             onChange={e => setInput(e.target.value)}
             onKeyDown={e => {
-              if (e.key === 'Enter' && !e.shiftKey) {
+              // 한글 등 IME 조합 중 Enter(조합 확정)는 전송으로 처리하지 않습니다.
+              // 이 가드가 없으면 조합-확정 Enter와 실제 Enter가 겹쳐 중복 전송됩니다.
+              if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
                 e.preventDefault();
                 send();
               }
