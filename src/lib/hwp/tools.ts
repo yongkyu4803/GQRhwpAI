@@ -214,6 +214,24 @@ function normalizeHex(c: string): string {
   return c.startsWith('#') ? c : `#${c}`;
 }
 
+// mm → HWPUNIT(1/7200 인치). 셀 너비·여백·간격 입력을 사용자 친화적 mm 로 받습니다.
+function mmToHwpUnit(mm: number): number {
+  return Math.round((mm * 7200) / 25.4);
+}
+
+// getCellProperties 가 돌려주는 값 중 setCellProperties 로 되돌려 쓸 수 있는(쓰기 가능) 필드만 추립니다.
+// setCellProperties 는 "전체 교체"라 일부만 보내면 나머지가 초기화되므로, 항상 이 전체 집합에
+// 변경분만 덮어써서 보내야 width/여백/세로정렬 등이 유실되지 않습니다. (borderFillId 등 읽기전용 제외)
+function fullCellProps(cur: Record<string, unknown>): Record<string, unknown> {
+  return {
+    width: cur.width, height: cur.height,
+    paddingLeft: cur.paddingLeft, paddingRight: cur.paddingRight, paddingTop: cur.paddingTop, paddingBottom: cur.paddingBottom,
+    verticalAlign: cur.verticalAlign, textDirection: cur.textDirection, isHeader: cur.isHeader,
+    borderTop: cur.borderTop, borderRight: cur.borderRight, borderBottom: cur.borderBottom, borderLeft: cur.borderLeft,
+    fillType: cur.fillType, fillColor: cur.fillColor,
+  };
+}
+
 /**
  * HWP 문서 편집 도구. 문서는 브라우저가 아니라 서버의 HwpDocument 인스턴스(holder.doc)에
  * 있으며, 도구는 인프로세스로 이 인스턴스를 조회·편집합니다.
@@ -250,14 +268,9 @@ export function createHwpToolServer(holder: DocHolder) {
     return anyOk;
   }
 
-  // 셀 테두리/배경: HWP 는 둘을 하나의 borderFill 로 관리합니다. 배경은 테두리와 같은 호출에
-  // 있을 때만 반영되고, 테두리만 바꾸면 배경이 사라질 수 있어 항상 현재 값을 읽어 함께 재전송합니다.
-  type BorderLine = { type: number; width: number; color: string };
-  function writeCellBorderFill(
-    ref: TableRef,
-    cellIdx: number,
-    opts: { sides?: Array<'top' | 'right' | 'bottom' | 'left'>; line?: BorderLine; fillColor?: string | null },
-  ): boolean {
+  // 셀 속성 변경의 공통 경로: 현재 전체 속성을 읽어 override 만 덮어써서 setCellProperties 에 보냅니다.
+  // (setCellProperties 는 전체 교체이므로 이렇게 해야 width·여백·세로정렬 등이 유실되지 않습니다.)
+  function mergeCellProps(ref: TableRef, cellIdx: number, override: Record<string, unknown>): boolean {
     const doc = holder.doc;
     let cur: Record<string, unknown>;
     try {
@@ -265,24 +278,25 @@ export function createHwpToolServer(holder: DocHolder) {
     } catch {
       return false;
     }
-    const props: Record<string, unknown> = {
-      borderTop: cur.borderTop,
-      borderRight: cur.borderRight,
-      borderBottom: cur.borderBottom,
-      borderLeft: cur.borderLeft,
-      fillType: cur.fillType,
-      fillColor: cur.fillColor,
-    };
+    return parseOk(doc.setCellProperties(ref.section, ref.paragraph, ref.controlIdx, cellIdx, JSON.stringify({ ...fullCellProps(cur), ...override })));
+  }
+
+  // 셀 테두리/배경: HWP 는 둘을 하나의 borderFill 로 관리하므로 항상 함께(그리고 나머지 속성도 보존해) 재전송합니다.
+  type BorderLine = { type: number; width: number; color: string };
+  function writeCellBorderFill(
+    ref: TableRef,
+    cellIdx: number,
+    opts: { sides?: Array<'top' | 'right' | 'bottom' | 'left'>; line?: BorderLine; fillColor?: string | null },
+  ): boolean {
+    const override: Record<string, unknown> = {};
     if (opts.line && opts.sides) {
-      for (const side of opts.sides) {
-        props[`border${side[0].toUpperCase()}${side.slice(1)}`] = opts.line;
-      }
+      for (const side of opts.sides) override[`border${side[0].toUpperCase()}${side.slice(1)}`] = opts.line;
     }
     if (opts.fillColor !== undefined) {
-      if (opts.fillColor === null) props.fillType = 'none';
-      else { props.fillType = 'solid'; props.fillColor = opts.fillColor; }
+      if (opts.fillColor === null) override.fillType = 'none';
+      else { override.fillType = 'solid'; override.fillColor = opts.fillColor; }
     }
-    return parseOk(doc.setCellProperties(ref.section, ref.paragraph, ref.controlIdx, cellIdx, JSON.stringify(props)));
+    return mergeCellProps(ref, cellIdx, override);
   }
 
   // 대상 셀 cellIdx 목록: (row,col) 지정 시 병합-aware 해석으로 한 칸, 둘 다 생략 시 표 전체(anchor 셀들).
@@ -789,17 +803,24 @@ export function createHwpToolServer(holder: DocHolder) {
       if ('error' in t) return { ...textResult(t.error), isError: true };
       const va = args.verticalAlign === 'top' ? 0 : args.verticalAlign === 'bottom' ? 2 : 1;
       let n = 0;
-      for (const cellIdx of t.ids) {
-        try {
-          const cur = JSON.parse(doc.getCellProperties(ref.section, ref.paragraph, ref.controlIdx, cellIdx));
-          const props = { borderTop: cur.borderTop, borderRight: cur.borderRight, borderBottom: cur.borderBottom, borderLeft: cur.borderLeft, fillType: cur.fillType, fillColor: cur.fillColor, verticalAlign: va };
-          if (parseOk(doc.setCellProperties(ref.section, ref.paragraph, ref.controlIdx, cellIdx, JSON.stringify(props)))) n++;
-        } catch { /* 건너뜀 */ }
-      }
+      for (const cellIdx of t.ids) if (mergeCellProps(ref, cellIdx, { verticalAlign: va })) n++;
       if (n > 0) holder.dirty = true;
       return jsonResult({ ok: n > 0, cellsChanged: n, scope: t.ids.length === 1 ? 'cell' : 'table', verticalAlign: args.verticalAlign });
     },
   );
+
+  // 표 속성도 setTableProperties 가 전체 교체이므로 현재 쓰기가능 필드를 읽어 override 만 덮어씁니다.
+  function mergeTableProps(ref: TableRef, override: Record<string, unknown>): boolean {
+    const doc = holder.doc;
+    let cur: Record<string, unknown>;
+    try { cur = JSON.parse(doc.getTableProperties(ref.section, ref.paragraph, ref.controlIdx)); } catch { return false; }
+    const base = {
+      cellSpacing: cur.cellSpacing,
+      paddingLeft: cur.paddingLeft, paddingRight: cur.paddingRight, paddingTop: cur.paddingTop, paddingBottom: cur.paddingBottom,
+      pageBreak: cur.pageBreak, repeatHeader: cur.repeatHeader,
+    };
+    return parseOk(doc.setTableProperties(ref.section, ref.paragraph, ref.controlIdx, JSON.stringify({ ...base, ...override })));
+  }
 
   const setTableOptions = tool(
     'set_table_options',
@@ -809,13 +830,79 @@ export function createHwpToolServer(holder: DocHolder) {
       repeatHeader: z.boolean().optional(),
     },
     async (args) => {
+      const ref = findTable(holder.doc, args.section, args.paragraph, args.controlIdx);
+      if (!ref) return { ...textResult('표가 없습니다.'), isError: true };
+      if (args.repeatHeader === undefined) return { ...textResult('설정할 옵션이 없습니다.'), isError: true };
+      const ok = mergeTableProps(ref, { repeatHeader: args.repeatHeader });
+      if (ok) holder.dirty = true;
+      return jsonResult({ ok, section: ref.section, paragraph: ref.paragraph, controlIdx: ref.controlIdx, repeatHeader: args.repeatHeader });
+    },
+  );
+
+  const setCellPadding = tool(
+    'set_cell_padding',
+    '표 셀의 안쪽 여백(padding)을 mm 단위로 설정합니다. row·col 지정 시 그 칸만(병합-aware), 둘 다 생략 시 표 전체. left/right/top/bottom 중 준 것만 바뀝니다.',
+    {
+      section: z.number().int().min(0), paragraph: z.number().int().min(0), controlIdx: z.number().int().min(0).optional(),
+      row: z.number().int().min(0).optional(), col: z.number().int().min(0).optional(),
+      left: z.number().min(0).max(50).optional().describe('왼쪽 여백(mm)'),
+      right: z.number().min(0).max(50).optional().describe('오른쪽 여백(mm)'),
+      top: z.number().min(0).max(50).optional().describe('위 여백(mm)'),
+      bottom: z.number().min(0).max(50).optional().describe('아래 여백(mm)'),
+    },
+    async (args) => {
+      const ref = findTable(holder.doc, args.section, args.paragraph, args.controlIdx);
+      if (!ref) return { ...textResult('표가 없습니다.'), isError: true };
+      const override: Record<string, unknown> = {};
+      if (args.left !== undefined) override.paddingLeft = mmToHwpUnit(args.left);
+      if (args.right !== undefined) override.paddingRight = mmToHwpUnit(args.right);
+      if (args.top !== undefined) override.paddingTop = mmToHwpUnit(args.top);
+      if (args.bottom !== undefined) override.paddingBottom = mmToHwpUnit(args.bottom);
+      if (Object.keys(override).length === 0) return { ...textResult('설정할 여백(left/right/top/bottom)이 없습니다.'), isError: true };
+      const t = targetCellIdxs(ref, args.row, args.col);
+      if ('error' in t) return { ...textResult(t.error), isError: true };
+      let n = 0;
+      for (const cellIdx of t.ids) if (mergeCellProps(ref, cellIdx, override)) n++;
+      if (n > 0) holder.dirty = true;
+      return jsonResult({ ok: n > 0, cellsChanged: n, scope: t.ids.length === 1 ? 'cell' : 'table', paddingMm: { left: args.left, right: args.right, top: args.top, bottom: args.bottom } });
+    },
+  );
+
+  const setColumnWidth = tool(
+    'set_column_width',
+    '표의 특정 열(col, 0-기반) 너비를 mm 단위로 설정합니다(해당 열의 모든 단일 셀에 적용). 표 전체 너비는 고정이라 한 열을 넓히면 다른 열이 좁아질 수 있습니다. 병합으로 여러 열을 걸친 셀은 건너뜁니다.',
+    {
+      section: z.number().int().min(0), paragraph: z.number().int().min(0), controlIdx: z.number().int().min(0).optional(),
+      col: z.number().int().min(0).describe('대상 열 (0-기반)'),
+      widthMm: z.number().positive().max(400).describe('열 너비(mm)'),
+    },
+    async (args) => {
       const doc = holder.doc;
       const ref = findTable(doc, args.section, args.paragraph, args.controlIdx);
       if (!ref) return { ...textResult('표가 없습니다.'), isError: true };
-      if (args.repeatHeader === undefined) return { ...textResult('설정할 옵션이 없습니다.'), isError: true };
-      const raw = doc.setTableProperties(ref.section, ref.paragraph, ref.controlIdx, JSON.stringify({ repeatHeader: args.repeatHeader }));
-      if (parseOk(raw)) holder.dirty = true;
-      return jsonResult({ ok: parseOk(raw), section: ref.section, paragraph: ref.paragraph, controlIdx: ref.controlIdx, repeatHeader: args.repeatHeader });
+      const cells = tableCells(doc, ref).filter(c => c.col === args.col && c.colSpan === 1);
+      if (cells.length === 0) return { ...textResult(`열 ${args.col} 에 너비를 조정할 단일 셀이 없습니다(범위 초과 또는 전부 병합).`), isError: true };
+      const w = mmToHwpUnit(args.widthMm);
+      let n = 0;
+      for (const c of cells) if (mergeCellProps(ref, c.cellIdx, { width: w })) n++;
+      if (n > 0) holder.dirty = true;
+      return jsonResult({ ok: n > 0, col: args.col, cellsChanged: n, widthMm: args.widthMm });
+    },
+  );
+
+  const setTableCellSpacing = tool(
+    'set_table_cell_spacing',
+    '표의 셀 간격(cellSpacing)을 mm 단위로 설정합니다. 0 이면 셀이 서로 붙습니다. 표 전체에 적용됩니다.',
+    {
+      section: z.number().int().min(0), paragraph: z.number().int().min(0), controlIdx: z.number().int().min(0).optional(),
+      spacingMm: z.number().min(0).max(20).describe('셀 간격(mm)'),
+    },
+    async (args) => {
+      const ref = findTable(holder.doc, args.section, args.paragraph, args.controlIdx);
+      if (!ref) return { ...textResult('표가 없습니다.'), isError: true };
+      const ok = mergeTableProps(ref, { cellSpacing: mmToHwpUnit(args.spacingMm) });
+      if (ok) holder.dirty = true;
+      return jsonResult({ ok, section: ref.section, paragraph: ref.paragraph, controlIdx: ref.controlIdx, spacingMm: args.spacingMm });
     },
   );
 
@@ -829,6 +916,7 @@ export function createHwpToolServer(holder: DocHolder) {
       addTableRow, addTableColumn, deleteTableRow, deleteTableColumn, deleteTable,
       formatText, formatCell, formatTable,
       setCellBackground, setCellBorder, setCellLayout, setTableOptions,
+      setCellPadding, setColumnWidth, setTableCellSpacing,
     ],
   });
 }
@@ -858,4 +946,7 @@ export const HWP_TOOL_NAMES = [
   'mcp__hwp__set_cell_border',
   'mcp__hwp__set_cell_layout',
   'mcp__hwp__set_table_options',
+  'mcp__hwp__set_cell_padding',
+  'mcp__hwp__set_column_width',
+  'mcp__hwp__set_table_cell_spacing',
 ];

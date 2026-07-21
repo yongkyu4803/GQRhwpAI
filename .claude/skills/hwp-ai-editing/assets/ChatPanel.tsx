@@ -57,6 +57,9 @@ const TOOL_LABELS: Record<string, string> = {
   mcp__hwp__set_cell_border: '셀 테두리 설정',
   mcp__hwp__set_cell_layout: '셀 세로정렬',
   mcp__hwp__set_table_options: '표 옵션',
+  mcp__hwp__set_cell_padding: '셀 여백 설정',
+  mcp__hwp__set_column_width: '열 너비 설정',
+  mcp__hwp__set_table_cell_spacing: '셀 간격 설정',
 };
 
 function toolSummary(name: string, input: unknown): string {
