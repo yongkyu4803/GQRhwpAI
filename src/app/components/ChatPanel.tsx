@@ -76,6 +76,9 @@ export default function ChatPanel({ getDocBytes, onApplyEdit, docId, onClose }: 
   const widthRef = useRef(DEFAULT_W);
   widthRef.current = width;
   const draggingRef = useRef(false);
+  // 드래그 중에는 전체 화면 오버레이를 띄워 에디터 iframe 이 마우스 이벤트를 가로채지
+  // 못하게 합니다(iframe 위에선 부모 window 의 mousemove 가 발생하지 않음).
+  const [dragging, setDragging] = useState(false);
 
   useEffect(() => {
     const saved = Number(localStorage.getItem('hwpChatWidth'));
@@ -92,6 +95,7 @@ export default function ChatPanel({ getDocBytes, onApplyEdit, docId, onClose }: 
     const onUp = () => {
       if (!draggingRef.current) return;
       draggingRef.current = false;
+      setDragging(false);
       document.body.style.cursor = '';
       document.body.style.userSelect = '';
       try { localStorage.setItem('hwpChatWidth', String(widthRef.current)); } catch { /* 무시 */ }
@@ -107,6 +111,7 @@ export default function ChatPanel({ getDocBytes, onApplyEdit, docId, onClose }: 
   const startResize = (e: React.MouseEvent) => {
     e.preventDefault();
     draggingRef.current = true;
+    setDragging(true);
     document.body.style.cursor = 'col-resize';
     document.body.style.userSelect = 'none';
   };
@@ -214,7 +219,10 @@ export default function ChatPanel({ getDocBytes, onApplyEdit, docId, onClose }: 
   }, [input, busy, getDocBytes, onApplyEdit]);
 
   return (
-    <aside style={{ width }} className="flex-none relative flex flex-col bg-white dark:bg-zinc-800 border-l border-zinc-200 dark:border-zinc-700">
+    <>
+      {/* 드래그 중 전체 화면 오버레이: iframe 이 mousemove 를 가로채지 못하게 덮음 */}
+      {dragging && <div className="fixed inset-0 z-50 cursor-col-resize" />}
+      <aside style={{ width }} className="flex-none relative flex flex-col bg-white dark:bg-zinc-800 border-l border-zinc-200 dark:border-zinc-700">
       {/* 왼쪽 가장자리 리사이즈 핸들 (드래그로 좌우 너비 조절) */}
       <div
         onMouseDown={startResize}
@@ -335,6 +343,7 @@ export default function ChatPanel({ getDocBytes, onApplyEdit, docId, onClose }: 
           </button>
         </div>
       </div>
-    </aside>
+      </aside>
+    </>
   );
 }
