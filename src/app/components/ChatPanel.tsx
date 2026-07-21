@@ -67,6 +67,50 @@ export default function ChatPanel({ getDocBytes, onApplyEdit, docId, onClose }: 
   // 대화 세션 ID. 첫 응답에서 받아 이후 턴에 재전송해 맥락을 이어갑니다(SDK resume).
   const sessionIdRef = useRef<string | null>(null);
 
+  // 패널 너비(드래그로 조절). SSR 하이드레이션 불일치를 피하려고 기본값으로 시작한 뒤
+  // 마운트 후 localStorage 저장값을 반영합니다.
+  const MIN_W = 300;
+  const MAX_W = 800;
+  const DEFAULT_W = 320;
+  const [width, setWidth] = useState(DEFAULT_W);
+  const widthRef = useRef(DEFAULT_W);
+  widthRef.current = width;
+  const draggingRef = useRef(false);
+
+  useEffect(() => {
+    const saved = Number(localStorage.getItem('hwpChatWidth'));
+    if (saved >= MIN_W && saved <= MAX_W) setWidth(saved);
+  }, []);
+
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      if (!draggingRef.current) return;
+      // 패널은 오른쪽에 붙어 있으므로 (뷰포트 너비 - 커서 X) = 패널 너비.
+      const w = Math.min(MAX_W, Math.max(MIN_W, window.innerWidth - e.clientX));
+      setWidth(w);
+    };
+    const onUp = () => {
+      if (!draggingRef.current) return;
+      draggingRef.current = false;
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      try { localStorage.setItem('hwpChatWidth', String(widthRef.current)); } catch { /* 무시 */ }
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    return () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+  }, []);
+
+  const startResize = (e: React.MouseEvent) => {
+    e.preventDefault();
+    draggingRef.current = true;
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+  };
+
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
   }, [turns]);
@@ -170,7 +214,14 @@ export default function ChatPanel({ getDocBytes, onApplyEdit, docId, onClose }: 
   }, [input, busy, getDocBytes, onApplyEdit]);
 
   return (
-    <aside className="flex-none w-80 flex flex-col bg-white dark:bg-zinc-800 border-l border-zinc-200 dark:border-zinc-700">
+    <aside style={{ width }} className="flex-none relative flex flex-col bg-white dark:bg-zinc-800 border-l border-zinc-200 dark:border-zinc-700">
+      {/* 왼쪽 가장자리 리사이즈 핸들 (드래그로 좌우 너비 조절) */}
+      <div
+        onMouseDown={startResize}
+        title="드래그하여 너비 조절"
+        className="absolute left-0 top-0 h-full w-1.5 -translate-x-1/2 cursor-col-resize z-10 hover:bg-blue-400/40 active:bg-blue-500/60 transition-colors"
+      />
+
       {/* Header */}
       <div className="flex-none flex items-center gap-2 px-3 py-2 border-b border-zinc-200 dark:border-zinc-700">
         <span className="text-sm font-semibold text-zinc-700 dark:text-zinc-200">AI 편집</span>
