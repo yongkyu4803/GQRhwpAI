@@ -933,6 +933,28 @@ export function createHwpToolServer(holder: DocHolder) {
     },
   );
 
+  const setRowHeight = tool(
+    'set_row_height',
+    '표의 특정 행(row, 0-기반) 높이를 mm 단위로 설정합니다(그 행 셀들의 최소 높이). 표 전체 높이는 각 행 높이의 합으로 계산됩니다. 내용이 많으면 지정 높이보다 커질 수 있습니다(최소 높이로 동작). 여러 행을 걸친 병합 셀은 건너뜁니다.',
+    {
+      section: z.number().int().min(0), paragraph: z.number().int().min(0), controlIdx: z.number().int().min(0).optional(),
+      row: z.number().int().min(0).describe('대상 행 (0-기반)'),
+      heightMm: z.number().positive().max(400).describe('행 높이(mm)'),
+    },
+    async (args) => {
+      const doc = holder.doc;
+      const ref = findTable(doc, args.section, args.paragraph, args.controlIdx);
+      if (!ref) return { ...textResult('표가 없습니다.'), isError: true };
+      const cells = tableCells(doc, ref).filter(c => c.row === args.row && c.rowSpan === 1);
+      if (cells.length === 0) return { ...textResult(`행 ${args.row} 에 높이를 조정할 단일 셀이 없습니다(범위 초과 또는 전부 병합).`), isError: true };
+      const h = mmToHwpUnit(args.heightMm);
+      let n = 0;
+      for (const c of cells) if (mergeCellProps(ref, c.cellIdx, { height: h })) n++;
+      if (n > 0) holder.dirty = true;
+      return jsonResult({ ok: n > 0, row: args.row, cellsChanged: n, heightMm: args.heightMm });
+    },
+  );
+
   const setTableCellSpacing = tool(
     'set_table_cell_spacing',
     '표의 셀 간격(cellSpacing)을 mm 단위로 설정합니다. 0 이면 셀이 서로 붙습니다. 표 전체에 적용됩니다.',
@@ -959,7 +981,7 @@ export function createHwpToolServer(holder: DocHolder) {
       addTableRow, addTableColumn, deleteTableRow, deleteTableColumn, deleteTable,
       formatText, formatCell, formatTable,
       setCellBackground, setCellBorder, setCellLayout, setTableOptions,
-      setCellPadding, setColumnWidth, setTableCellSpacing, resizeTable,
+      setCellPadding, setColumnWidth, setTableCellSpacing, resizeTable, setRowHeight,
     ],
   });
 }
@@ -993,4 +1015,5 @@ export const HWP_TOOL_NAMES = [
   'mcp__hwp__set_column_width',
   'mcp__hwp__set_table_cell_spacing',
   'mcp__hwp__resize_table',
+  'mcp__hwp__set_row_height',
 ];
