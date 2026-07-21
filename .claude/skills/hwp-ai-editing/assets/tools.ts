@@ -299,18 +299,25 @@ export function createHwpToolServer(holder: DocHolder) {
     return mergeCellProps(ref, cellIdx, override);
   }
 
-  // 대상 셀 cellIdx 목록: (row,col) 지정 시 병합-aware 해석으로 한 칸, 둘 다 생략 시 표 전체(anchor 셀들).
-  function targetCellIdxs(ref: TableRef, row?: number, col?: number): { ids: number[] } | { error: string } {
+  // 대상 셀 cellIdx 목록(병합-aware):
+  //   row+col → 그 칸 하나 / row만 → 그 행 전체 / col만 → 그 열 전체 / 둘 다 생략 → 표 전체.
+  function targetCellIdxs(ref: TableRef, row?: number, col?: number): { ids: number[]; scope: string } | { error: string } {
     const cells = tableCells(holder.doc, ref);
-    if (row === undefined && col === undefined) {
-      return { ids: cells.map(c => c.cellIdx) };
+    const uniq = (a: number[]) => [...new Set(a)];
+    if (row === undefined && col === undefined) return { ids: uniq(cells.map(c => c.cellIdx)), scope: 'table' };
+    if (col === undefined) {
+      const ids = cells.filter(c => row! >= c.row && row! < c.row + c.rowSpan).map(c => c.cellIdx);
+      if (!ids.length) return { error: `행 ${row} 없음 — 표 크기 ${ref.rows}×${ref.cols}.` };
+      return { ids: uniq(ids), scope: `row ${row}` };
     }
-    if (row === undefined || col === undefined) {
-      return { error: 'row 와 col 은 함께 지정하거나 둘 다 생략(표 전체)해야 합니다.' };
+    if (row === undefined) {
+      const ids = cells.filter(c => col! >= c.col && col! < c.col + c.colSpan).map(c => c.cellIdx);
+      if (!ids.length) return { error: `열 ${col} 없음 — 표 크기 ${ref.rows}×${ref.cols}.` };
+      return { ids: uniq(ids), scope: `col ${col}` };
     }
     const idx = resolveCellIdx(cells, row, col);
     if (idx === null) return { error: `칸 (${row},${col}) 없음 — 표 크기 ${ref.rows}×${ref.cols}(병합 포함).` };
-    return { ids: [idx] };
+    return { ids: [idx], scope: `cell (${row},${col})` };
   }
 
   // ────────────────── 읽기 도구 ──────────────────
@@ -740,7 +747,7 @@ export function createHwpToolServer(holder: DocHolder) {
 
   const setCellBackground = tool(
     'set_cell_background',
-    '표 셀의 배경색을 설정합니다. row·col 지정 시 그 칸만(병합-aware), 둘 다 생략 시 표 전체. 색은 #RRGGBB, "none" 이면 배경 제거. 테두리는 보존됩니다.',
+    '표 셀의 배경색을 설정합니다. 대상: row+col=그 칸, row만=그 행 전체, col만=그 열 전체, 둘 다 생략=표 전체 (병합-aware). 색은 #RRGGBB, "none" 이면 배경 제거. 테두리는 보존됩니다.',
     {
       section: z.number().int().min(0), paragraph: z.number().int().min(0), controlIdx: z.number().int().min(0).optional(),
       row: z.number().int().min(0).optional(), col: z.number().int().min(0).optional(),
@@ -756,13 +763,13 @@ export function createHwpToolServer(holder: DocHolder) {
       let n = 0;
       for (const cellIdx of t.ids) if (writeCellBorderFill(ref, cellIdx, { fillColor })) n++;
       if (n > 0) holder.dirty = true;
-      return jsonResult({ ok: n > 0, cellsChanged: n, scope: t.ids.length === 1 ? 'cell' : 'table', color: args.color });
+      return jsonResult({ ok: n > 0, cellsChanged: n, scope: t.scope, color: args.color });
     },
   );
 
   const setCellBorder = tool(
     'set_cell_border',
-    '표 셀의 테두리를 설정합니다. row·col 지정 시 그 칸만(병합-aware), 둘 다 생략 시 표 전체. sides=all/top/bottom/left/right, style=solid/none. 배경은 보존됩니다.',
+    '표 셀의 테두리를 설정합니다. 대상: row+col=그 칸, row만=그 행 전체, col만=그 열 전체, 둘 다 생략=표 전체 (병합-aware). sides=all/top/bottom/left/right, style=solid/none. 배경은 보존됩니다.',
     {
       section: z.number().int().min(0), paragraph: z.number().int().min(0), controlIdx: z.number().int().min(0).optional(),
       row: z.number().int().min(0).optional(), col: z.number().int().min(0).optional(),
@@ -783,13 +790,13 @@ export function createHwpToolServer(holder: DocHolder) {
       let n = 0;
       for (const cellIdx of t.ids) if (writeCellBorderFill(ref, cellIdx, { sides: sides as Array<'top' | 'right' | 'bottom' | 'left'>, line })) n++;
       if (n > 0) holder.dirty = true;
-      return jsonResult({ ok: n > 0, cellsChanged: n, scope: t.ids.length === 1 ? 'cell' : 'table', sides: sidesArg, style: args.style ?? 'solid' });
+      return jsonResult({ ok: n > 0, cellsChanged: n, scope: t.scope, sides: sidesArg, style: args.style ?? 'solid' });
     },
   );
 
   const setCellLayout = tool(
     'set_cell_layout',
-    '표 셀의 세로 정렬(verticalAlign: top/middle/bottom)을 설정합니다. row·col 지정 시 그 칸만(병합-aware), 둘 다 생략 시 표 전체.',
+    '표 셀의 세로 정렬(verticalAlign: top/middle/bottom)을 설정합니다. 대상: row+col=그 칸, row만=그 행 전체, col만=그 열 전체, 둘 다 생략=표 전체 (병합-aware).',
     {
       section: z.number().int().min(0), paragraph: z.number().int().min(0), controlIdx: z.number().int().min(0).optional(),
       row: z.number().int().min(0).optional(), col: z.number().int().min(0).optional(),
@@ -805,7 +812,7 @@ export function createHwpToolServer(holder: DocHolder) {
       let n = 0;
       for (const cellIdx of t.ids) if (mergeCellProps(ref, cellIdx, { verticalAlign: va })) n++;
       if (n > 0) holder.dirty = true;
-      return jsonResult({ ok: n > 0, cellsChanged: n, scope: t.ids.length === 1 ? 'cell' : 'table', verticalAlign: args.verticalAlign });
+      return jsonResult({ ok: n > 0, cellsChanged: n, scope: t.scope, verticalAlign: args.verticalAlign });
     },
   );
 
@@ -841,7 +848,7 @@ export function createHwpToolServer(holder: DocHolder) {
 
   const setCellPadding = tool(
     'set_cell_padding',
-    '표 셀의 안쪽 여백(padding)을 mm 단위로 설정합니다. row·col 지정 시 그 칸만(병합-aware), 둘 다 생략 시 표 전체. left/right/top/bottom 중 준 것만 바뀝니다.',
+    '표 셀의 안쪽 여백(padding)을 mm 단위로 설정합니다. 대상: row+col=그 칸, row만=그 행 전체, col만=그 열 전체, 둘 다 생략=표 전체 (병합-aware). left/right/top/bottom 중 준 것만 바뀝니다.',
     {
       section: z.number().int().min(0), paragraph: z.number().int().min(0), controlIdx: z.number().int().min(0).optional(),
       row: z.number().int().min(0).optional(), col: z.number().int().min(0).optional(),
@@ -864,7 +871,7 @@ export function createHwpToolServer(holder: DocHolder) {
       let n = 0;
       for (const cellIdx of t.ids) if (mergeCellProps(ref, cellIdx, override)) n++;
       if (n > 0) holder.dirty = true;
-      return jsonResult({ ok: n > 0, cellsChanged: n, scope: t.ids.length === 1 ? 'cell' : 'table', paddingMm: { left: args.left, right: args.right, top: args.top, bottom: args.bottom } });
+      return jsonResult({ ok: n > 0, cellsChanged: n, scope: t.scope, paddingMm: { left: args.left, right: args.right, top: args.top, bottom: args.bottom } });
     },
   );
 
