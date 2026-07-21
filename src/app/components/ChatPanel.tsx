@@ -36,7 +36,8 @@ function base64ToBytes(b64: string): Uint8Array {
 const TOOL_LABELS: Record<string, string> = {
   mcp__hwp__get_document_info: '문서 구조 확인',
   mcp__hwp__read_paragraphs: '문단 읽기',
-  mcp__hwp__search_text: '문서 검색',
+  mcp__hwp__search_text: '본문 검색',
+  mcp__hwp__find_text: '문서·표 검색',
   mcp__hwp__insert_text: '텍스트 삽입',
   mcp__hwp__delete_range: '범위 삭제',
   mcp__hwp__replace_text: '텍스트 교체',
@@ -44,11 +45,18 @@ const TOOL_LABELS: Record<string, string> = {
   mcp__hwp__list_tables: '표 목록 확인',
   mcp__hwp__read_table: '표 읽기',
   mcp__hwp__set_cell: '표 칸 편집',
+  mcp__hwp__add_table_row: '표 행 추가',
+  mcp__hwp__add_table_column: '표 열 추가',
+  mcp__hwp__delete_table_row: '표 행 삭제',
+  mcp__hwp__delete_table_column: '표 열 삭제',
+  mcp__hwp__delete_table: '표 삭제',
   mcp__hwp__format_text: '글자 서식 변경',
   mcp__hwp__format_cell: '표 칸 서식 변경',
   mcp__hwp__format_table: '표 서식 변경',
   mcp__hwp__set_cell_background: '셀 배경색 설정',
   mcp__hwp__set_cell_border: '셀 테두리 설정',
+  mcp__hwp__set_cell_layout: '셀 세로정렬',
+  mcp__hwp__set_table_options: '표 옵션',
 };
 
 function toolSummary(name: string, input: unknown): string {

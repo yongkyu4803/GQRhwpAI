@@ -36,7 +36,8 @@ function base64ToBytes(b64: string): Uint8Array {
 const TOOL_LABELS: Record<string, string> = {
   mcp__hwp__get_document_info: '문서 구조 확인',
   mcp__hwp__read_paragraphs: '문단 읽기',
-  mcp__hwp__search_text: '문서 검색',
+  mcp__hwp__search_text: '본문 검색',
+  mcp__hwp__find_text: '문서·표 검색',
   mcp__hwp__insert_text: '텍스트 삽입',
   mcp__hwp__delete_range: '범위 삭제',
   mcp__hwp__replace_text: '텍스트 교체',
@@ -44,11 +45,18 @@ const TOOL_LABELS: Record<string, string> = {
   mcp__hwp__list_tables: '표 목록 확인',
   mcp__hwp__read_table: '표 읽기',
   mcp__hwp__set_cell: '표 칸 편집',
+  mcp__hwp__add_table_row: '표 행 추가',
+  mcp__hwp__add_table_column: '표 열 추가',
+  mcp__hwp__delete_table_row: '표 행 삭제',
+  mcp__hwp__delete_table_column: '표 열 삭제',
+  mcp__hwp__delete_table: '표 삭제',
   mcp__hwp__format_text: '글자 서식 변경',
   mcp__hwp__format_cell: '표 칸 서식 변경',
   mcp__hwp__format_table: '표 서식 변경',
   mcp__hwp__set_cell_background: '셀 배경색 설정',
   mcp__hwp__set_cell_border: '셀 테두리 설정',
+  mcp__hwp__set_cell_layout: '셀 세로정렬',
+  mcp__hwp__set_table_options: '표 옵션',
 };
 
 function toolSummary(name: string, input: unknown): string {
@@ -66,6 +74,55 @@ export default function ChatPanel({ getDocBytes, onApplyEdit, docId, onClose }: 
   const scrollRef = useRef<HTMLDivElement>(null);
   // 대화 세션 ID. 첫 응답에서 받아 이후 턴에 재전송해 맥락을 이어갑니다(SDK resume).
   const sessionIdRef = useRef<string | null>(null);
+
+  // 패널 너비(드래그로 조절). SSR 하이드레이션 불일치를 피하려고 기본값으로 시작한 뒤
+  // 마운트 후 localStorage 저장값을 반영합니다.
+  const MIN_W = 300;
+  const MAX_W = 800;
+  const DEFAULT_W = 320;
+  const [width, setWidth] = useState(DEFAULT_W);
+  const widthRef = useRef(DEFAULT_W);
+  widthRef.current = width;
+  const draggingRef = useRef(false);
+  // 드래그 중에는 전체 화면 오버레이를 띄워 에디터 iframe 이 마우스 이벤트를 가로채지
+  // 못하게 합니다(iframe 위에선 부모 window 의 mousemove 가 발생하지 않음).
+  const [dragging, setDragging] = useState(false);
+
+  useEffect(() => {
+    const saved = Number(localStorage.getItem('hwpChatWidth'));
+    if (saved >= MIN_W && saved <= MAX_W) setWidth(saved);
+  }, []);
+
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      if (!draggingRef.current) return;
+      // 패널은 오른쪽에 붙어 있으므로 (뷰포트 너비 - 커서 X) = 패널 너비.
+      const w = Math.min(MAX_W, Math.max(MIN_W, window.innerWidth - e.clientX));
+      setWidth(w);
+    };
+    const onUp = () => {
+      if (!draggingRef.current) return;
+      draggingRef.current = false;
+      setDragging(false);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      try { localStorage.setItem('hwpChatWidth', String(widthRef.current)); } catch { /* 무시 */ }
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    return () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+  }, []);
+
+  const startResize = (e: React.MouseEvent) => {
+    e.preventDefault();
+    draggingRef.current = true;
+    setDragging(true);
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+  };
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
@@ -170,7 +227,17 @@ export default function ChatPanel({ getDocBytes, onApplyEdit, docId, onClose }: 
   }, [input, busy, getDocBytes, onApplyEdit]);
 
   return (
-    <aside className="flex-none w-80 flex flex-col bg-white dark:bg-zinc-800 border-l border-zinc-200 dark:border-zinc-700">
+    <>
+      {/* 드래그 중 전체 화면 오버레이: iframe 이 mousemove 를 가로채지 못하게 덮음 */}
+      {dragging && <div className="fixed inset-0 z-50 cursor-col-resize" />}
+      <aside style={{ width }} className="flex-none relative flex flex-col bg-white dark:bg-zinc-800 border-l border-zinc-200 dark:border-zinc-700">
+      {/* 왼쪽 가장자리 리사이즈 핸들 (드래그로 좌우 너비 조절) */}
+      <div
+        onMouseDown={startResize}
+        title="드래그하여 너비 조절"
+        className="absolute left-0 top-0 h-full w-1.5 -translate-x-1/2 cursor-col-resize z-10 hover:bg-blue-400/40 active:bg-blue-500/60 transition-colors"
+      />
+
       {/* Header */}
       <div className="flex-none flex items-center gap-2 px-3 py-2 border-b border-zinc-200 dark:border-zinc-700">
         <span className="text-sm font-semibold text-zinc-700 dark:text-zinc-200">AI 편집</span>
@@ -260,7 +327,9 @@ export default function ChatPanel({ getDocBytes, onApplyEdit, docId, onClose }: 
             value={input}
             onChange={e => setInput(e.target.value)}
             onKeyDown={e => {
-              if (e.key === 'Enter' && !e.shiftKey) {
+              // 한글 등 IME 조합 중 Enter(조합 확정)는 전송으로 처리하지 않습니다.
+              // 이 가드가 없으면 조합-확정 Enter와 실제 Enter가 겹쳐 중복 전송됩니다.
+              if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
                 e.preventDefault();
                 send();
               }
@@ -282,6 +351,7 @@ export default function ChatPanel({ getDocBytes, onApplyEdit, docId, onClose }: 
           </button>
         </div>
       </div>
-    </aside>
+      </aside>
+    </>
   );
 }
