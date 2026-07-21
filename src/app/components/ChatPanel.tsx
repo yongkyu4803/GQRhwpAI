@@ -60,6 +60,7 @@ const TOOL_LABELS: Record<string, string> = {
   mcp__hwp__set_cell_padding: '셀 여백 설정',
   mcp__hwp__set_column_width: '열 너비 설정',
   mcp__hwp__set_table_cell_spacing: '셀 간격 설정',
+  mcp__hwp__resize_table: '표 크기 조정',
 };
 
 function toolSummary(name: string, input: unknown): string {

@@ -897,6 +897,42 @@ export function createHwpToolServer(holder: DocHolder) {
     },
   );
 
+  const resizeTable = tool(
+    'resize_table',
+    '표 전체 너비를 mm 단위로 조정합니다. 모든 열 너비를 현재 비율을 유지한 채 목표 너비에 맞춰 비례 확대/축소합니다. (한글의 "표 가장자리 끌어 크기 조정"에 해당. 표 전체 너비 자체는 레이아웃 계산값이라, 실제로는 열 너비를 비례 조정하는 방식입니다.)',
+    {
+      section: z.number().int().min(0), paragraph: z.number().int().min(0), controlIdx: z.number().int().min(0).optional(),
+      widthMm: z.number().positive().max(500).describe('목표 표 전체 너비(mm)'),
+    },
+    async (args) => {
+      const doc = holder.doc;
+      const ref = findTable(doc, args.section, args.paragraph, args.controlIdx);
+      if (!ref) return { ...textResult('표가 없습니다.'), isError: true };
+      const cells = tableCells(doc, ref);
+      const single = cells.filter(c => c.colSpan === 1);
+      if (single.length === 0) return { ...textResult('너비를 조정할 단일 열 셀이 없습니다.'), isError: true };
+      // 각 열의 대표 너비(그 열 첫 단일셀)를 모아 현재 전체 너비 추정.
+      const repByCol = new Map<number, number>();
+      for (const c of single) {
+        if (!repByCol.has(c.col)) {
+          try { repByCol.set(c.col, JSON.parse(doc.getCellProperties(ref.section, ref.paragraph, ref.controlIdx, c.cellIdx)).width); } catch { /* skip */ }
+        }
+      }
+      const curTotal = [...repByCol.values()].reduce((a, b) => a + b, 0);
+      if (curTotal <= 0) return { ...textResult('현재 열 너비를 읽을 수 없습니다.'), isError: true };
+      const scale = mmToHwpUnit(args.widthMm) / curTotal;
+      let n = 0;
+      for (const c of single) {
+        try {
+          const cur = JSON.parse(doc.getCellProperties(ref.section, ref.paragraph, ref.controlIdx, c.cellIdx));
+          if (mergeCellProps(ref, c.cellIdx, { width: Math.max(1, Math.round((cur.width as number) * scale)) })) n++;
+        } catch { /* skip */ }
+      }
+      if (n > 0) holder.dirty = true;
+      return jsonResult({ ok: n > 0, cellsChanged: n, targetWidthMm: args.widthMm, scale: Number(scale.toFixed(3)) });
+    },
+  );
+
   const setTableCellSpacing = tool(
     'set_table_cell_spacing',
     '표의 셀 간격(cellSpacing)을 mm 단위로 설정합니다. 0 이면 셀이 서로 붙습니다. 표 전체에 적용됩니다.',
@@ -923,7 +959,7 @@ export function createHwpToolServer(holder: DocHolder) {
       addTableRow, addTableColumn, deleteTableRow, deleteTableColumn, deleteTable,
       formatText, formatCell, formatTable,
       setCellBackground, setCellBorder, setCellLayout, setTableOptions,
-      setCellPadding, setColumnWidth, setTableCellSpacing,
+      setCellPadding, setColumnWidth, setTableCellSpacing, resizeTable,
     ],
   });
 }
@@ -956,4 +992,5 @@ export const HWP_TOOL_NAMES = [
   'mcp__hwp__set_cell_padding',
   'mcp__hwp__set_column_width',
   'mcp__hwp__set_table_cell_spacing',
+  'mcp__hwp__resize_table',
 ];
