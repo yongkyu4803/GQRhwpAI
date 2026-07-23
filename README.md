@@ -8,6 +8,7 @@ HWP 뷰어·에디터 엔진은 [rhwp](https://github.com/edwardkim/rhwp)를 사
 - HWP/HWPX 뷰어 + 편집기(rhwp-studio 임베드, **표 크기 조정 등 최신 기능 포함 — 레포에 번들되어 별도 빌드 불필요**)
 - Claude AI 채팅으로 문서 편집: 본문·표 내용 수정/검색, 표 삽입·행열 추가삭제·병합 인식, 글꼴·크기·색·정렬, 셀 배경·테두리·여백·크기 조정 등
 - Claude 구독 계정(Pro/Max) 인증 (API 키 미사용)
+- (실험) 채팅 상단 **Claude / GPT 토글** — 같은 편집 도구를 다른 프로바이더로도 시험. GPT 경로는 Vercel AI SDK + OpenAI(또는 Google) **API 키**를 씁니다(구독 아님). `.env.example` 의 `HWP_AI_*` 참고.
 
 ## 시작하기 (클론 후 실행)
 

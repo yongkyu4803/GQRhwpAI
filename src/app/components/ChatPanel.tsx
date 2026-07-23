@@ -76,6 +76,10 @@ export default function ChatPanel({ getDocBytes, onApplyEdit, docId, onClose }: 
   const [turns, setTurns] = useState<Turn[]>([]);
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
+  // AI 프로바이더 선택. claude=구독(Agent SDK) 라우트, gpt=API 키(Vercel AI SDK) 라우트.
+  const [provider, setProvider] = useState<'claude' | 'gpt'>('claude');
+  // GPT(API) 경로에서 쓸 모델. 화면에서 고르거나 직접 입력. gemini* 는 자동으로 google provider.
+  const [model, setModel] = useState('gpt-5.4-nano');
   const scrollRef = useRef<HTMLDivElement>(null);
   // 대화 세션 ID. 첫 응답에서 받아 이후 턴에 재전송해 맥락을 이어갑니다(SDK resume).
   const sessionIdRef = useRef<string | null>(null);
@@ -96,6 +100,8 @@ export default function ChatPanel({ getDocBytes, onApplyEdit, docId, onClose }: 
   useEffect(() => {
     const saved = Number(localStorage.getItem('hwpChatWidth'));
     if (saved >= MIN_W && saved <= MAX_W) setWidth(saved);
+    const savedModel = localStorage.getItem('hwpAiModel');
+    if (savedModel) setModel(savedModel);
   }, []);
 
   useEffect(() => {
@@ -176,11 +182,20 @@ export default function ChatPanel({ getDocBytes, onApplyEdit, docId, onClose }: 
       const form = new FormData();
       form.set('prompt', prompt);
       if (sessionIdRef.current) form.set('sessionId', sessionIdRef.current);
+      if (provider === 'gpt') {
+        const m = model.trim();
+        if (m) {
+          form.set('model', m);
+          // gemini* 모델이면 google provider, 그 외는 openai.
+          form.set('provider', m.toLowerCase().startsWith('gemini') ? 'google' : 'openai');
+        }
+      }
       // Uint8Array → Blob. 뷰가 있는 버퍼여도 안전하게 슬라이스해 복사합니다.
       const ab = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
       form.set('file', new Blob([ab], { type: 'application/octet-stream' }), 'document.hwp');
 
-      const res = await fetch('/api/chat', { method: 'POST', body: form });
+      const url = provider === 'gpt' ? '/api/chat-ai' : '/api/chat';
+      const res = await fetch(url, { method: 'POST', body: form });
       if (!res.ok || !res.body) {
         const msg = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
         patchAssistant(a => ({ ...a, error: msg.error ?? `HTTP ${res.status}` }));
@@ -229,7 +244,18 @@ export default function ChatPanel({ getDocBytes, onApplyEdit, docId, onClose }: 
     } finally {
       setBusy(false);
     }
-  }, [input, busy, getDocBytes, onApplyEdit]);
+  }, [input, busy, getDocBytes, onApplyEdit, provider, model]);
+
+  // 프로바이더를 바꾸면 세션/맥락을 초기화합니다(라우트·인증 방식이 달라짐).
+  const changeProvider = useCallback((p: 'claude' | 'gpt') => {
+    setProvider(prev => {
+      if (prev !== p) {
+        sessionIdRef.current = null;
+        setTurns([]);
+      }
+      return p;
+    });
+  }, []);
 
   return (
     <>
@@ -246,6 +272,24 @@ export default function ChatPanel({ getDocBytes, onApplyEdit, docId, onClose }: 
       {/* Header */}
       <div className="flex-none flex items-center gap-2 px-3 py-2 border-b border-zinc-200 dark:border-zinc-700">
         <span className="text-sm font-semibold text-zinc-700 dark:text-zinc-200">AI 편집</span>
+        {/* 프로바이더 토글: Claude(구독) / GPT(API 키) */}
+        <div className="flex items-center rounded-md bg-zinc-100 dark:bg-zinc-700 p-0.5 text-[11px]">
+          {(['claude', 'gpt'] as const).map(p => (
+            <button
+              key={p}
+              onClick={() => changeProvider(p)}
+              disabled={busy}
+              title={p === 'claude' ? 'Claude (구독 인증)' : 'GPT (OpenAI API 키)'}
+              className={`px-2 py-0.5 rounded transition-colors disabled:opacity-40 ${
+                provider === p
+                  ? 'bg-white dark:bg-zinc-900 text-zinc-800 dark:text-zinc-100 shadow-sm'
+                  : 'text-zinc-500 dark:text-zinc-400'
+              }`}
+            >
+              {p === 'claude' ? 'Claude' : 'GPT'}
+            </button>
+          ))}
+        </div>
         <div className="flex-1" />
         <button
           onClick={startNewChat}
@@ -269,6 +313,31 @@ export default function ChatPanel({ getDocBytes, onApplyEdit, docId, onClose }: 
           </svg>
         </button>
       </div>
+
+      {/* 모델 선택 바 (GPT/API 경로에서만). 목록에서 고르거나 직접 입력. */}
+      {provider === 'gpt' && (
+        <div className="flex-none flex items-center gap-2 px-3 py-1.5 border-b border-zinc-200 dark:border-zinc-700 text-[11px]">
+          <span className="flex-none text-zinc-500 dark:text-zinc-400">모델</span>
+          <input
+            list="hwp-ai-models"
+            value={model}
+            onChange={e => {
+              setModel(e.target.value);
+              try { localStorage.setItem('hwpAiModel', e.target.value); } catch { /* 무시 */ }
+            }}
+            disabled={busy}
+            spellCheck={false}
+            placeholder="예: gpt-5.4-nano"
+            className="flex-1 min-w-0 rounded border border-zinc-300 dark:border-zinc-600 bg-white dark:bg-zinc-900 px-2 py-1 text-zinc-700 dark:text-zinc-100 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:opacity-50"
+          />
+          <datalist id="hwp-ai-models">
+            <option value="gpt-5.4-nano" />
+            <option value="gpt-5-mini" />
+            <option value="gpt-4o-mini" />
+            <option value="gemini-2.5-flash" />
+          </datalist>
+        </div>
+      )}
 
       {/* Messages */}
       <div ref={scrollRef} className="flex-1 overflow-y-auto p-3 flex flex-col gap-3">
