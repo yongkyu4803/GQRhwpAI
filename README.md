@@ -1,24 +1,29 @@
 # GQRhwpAI
 
 한글(HWP/HWPX) 문서를 웹에서 보고 편집하며, **Claude AI 채팅으로 문서 작업을 돕는** Next.js 앱입니다.
-HWP 뷰어·에디터 엔진은 [rhwp](https://github.com/edwardkim/rhwp)(`@rhwp/core`·`@rhwp/editor`)를 사용하고,
-[Claude Agent SDK](https://code.claude.com/docs/en/agent-sdk)로 서버측 WASM 문서를 조작하는 커스텀 도구(텍스트·표·서식·정렬·셀 배경/테두리)를 제공합니다.
+HWP 뷰어·에디터 엔진은 [rhwp](https://github.com/edwardkim/rhwp)를 사용하고,
+[Claude Agent SDK](https://code.claude.com/docs/en/agent-sdk)로 서버측 WASM 문서를 조작하는 AI 편집 도구를 제공합니다.
 
-## AI 채팅 인증 (구독 계정)
+**기능**
+- HWP/HWPX 뷰어 + 편집기(rhwp-studio 임베드, **표 크기 조정 등 최신 기능 포함 — 레포에 번들되어 별도 빌드 불필요**)
+- Claude AI 채팅으로 문서 편집: 본문·표 내용 수정/검색, 표 삽입·행열 추가삭제·병합 인식, 글꼴·크기·색·정렬, 셀 배경·테두리·여백·크기 조정 등
+- Claude 구독 계정(Pro/Max) 인증 (API 키 미사용)
 
-AI 편집은 **Claude 구독 계정(Pro/Max)** 으로 인증합니다. **API 키는 사용하지 않습니다**
-(서버가 `ANTHROPIC_API_KEY` 를 무시하고 구독 인증만 사용). 클론해서 쓰는 사람은 **각자 본인 구독**으로 아래를 설정하세요:
+## 시작하기 (클론 후 실행)
 
 ```bash
-npm install                       # 의존성 설치 (+ public/rhwp_bg.wasm 준비)
+git clone https://github.com/yongkyu4803/GQRhwpAI.git
+cd GQRhwpAI
+npm install                        # 의존성 설치 (+ public/rhwp_bg.wasm 자동 준비)
 npm i -g @anthropic-ai/claude-code # Claude Code CLI (없으면)
 claude setup-token                 # 본인 Pro/Max 구독으로 장기 토큰 발급
-cp .env.example .env.local         # 그리고 CLAUDE_CODE_OAUTH_TOKEN 에 토큰 붙여넣기
-npm run dev
+cp .env.example .env.local         # .env.local 의 CLAUDE_CODE_OAUTH_TOKEN 에 토큰 붙여넣기
+npm run dev                        # http://localhost:3007
 ```
 
-이미 이 머신에서 Claude Code 에 로그인돼 있으면 토큰 없이도 동작합니다. 토큰은 개인 자격증명이니
-공유하거나 커밋하지 마세요(`.env.local` 은 git 에서 제외됨).
+- **에디터/뷰어는 바로 동작**합니다(studio 는 `public/studio/` 에 번들, WASM 은 postinstall 이 준비).
+- **AI 채팅**만 위 토큰 설정이 필요합니다. 이미 이 머신에서 Claude Code 에 로그인돼 있으면 토큰 없이도 됩니다.
+  토큰은 개인 자격증명이니 공유·커밋하지 마세요(`.env.local` 은 git 제외).
 
 ## Credits & License
 
