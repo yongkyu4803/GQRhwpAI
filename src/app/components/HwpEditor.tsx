@@ -29,11 +29,11 @@ function HwpEditor({ fileBuffer, fileName, onReady, ref }: HwpEditorProps) {
     (async () => {
       const { createEditor } = await import('@rhwp/editor');
       if (cancelled || !containerRef.current) return;
-      // studioUrl 을 환경변수로 주입할 수 있게 합니다. self-host 한 rhwp-studio(예: 표 선
-      // 드래그 리사이즈가 되는 최신 빌드)를 붙이려면 NEXT_PUBLIC_RHWP_STUDIO_URL 만 지정하면 됩니다.
-      // 미설정 시 기본 호스팅 studio(edwardkim.github.io/rhwp)를 사용합니다.
-      const studioUrl = process.env.NEXT_PUBLIC_RHWP_STUDIO_URL;
-      const editor = await createEditor(containerRef.current, studioUrl ? { studioUrl } : undefined);
+      // 기본값은 레포에 함께 배포한 self-host studio(public/studio) 입니다. 이 빌드는
+      // 표 선 드래그 리사이즈 등 최신 기능을 포함합니다. 외부 호스팅 studio 로 바꾸려면
+      // NEXT_PUBLIC_RHWP_STUDIO_URL 로 그 URL 을 지정하면 됩니다.
+      const studioUrl = process.env.NEXT_PUBLIC_RHWP_STUDIO_URL || '/studio/index.html';
+      const editor = await createEditor(containerRef.current, { studioUrl });
       if (cancelled) { editor.destroy(); return; }
       editorInstanceRef.current = editor;
       initializedRef.current = true;
