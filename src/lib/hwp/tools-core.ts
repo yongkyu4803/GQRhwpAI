@@ -40,6 +40,9 @@ function defineTool<S extends z.ZodRawShape>(
 }
 
 const MAX_PARAGRAPHS_PER_READ = 40;
+const MAX_OUTLINE_ITEMS = 100;
+// 수준 1단당 기본 들여쓰기. 공문서에서 흔한 "스페이스 1~2칸" 정도의 폭입니다.
+const DEFAULT_INDENT_MM_PER_LEVEL = 5;
 
 function textResult(text: string): ToolResult {
   return { text };
@@ -65,6 +68,85 @@ function parseOk(raw: string): boolean {
 function readParagraph(doc: HwpDocument, section: number, para: number): string {
   const len = doc.getParagraphLength(section, para);
   return len > 0 ? doc.getTextRange(section, para, 0, len) : '';
+}
+
+// ── 문단 머리(글머리표·문단 번호) ──
+// 화면에 보이는 □·○ 같은 기호가 문단 속성(headType)일 수 있습니다. 이건 본문 텍스트가
+// 아니라서 getTextRange/searchText 로는 전혀 안 보이고, 그래서 replace_text 로 바꿀 수도
+// 없습니다. 모델이 이 상태를 인지해 set_paragraph_bullet 으로 가도록 read_paragraphs 에
+// 함께 실어 보냅니다.
+type ParaHead = { headType: string; level: number; numberingId?: number; bulletChar?: string };
+
+/** 문서에 정의된 글머리표 목록을 id→문자 맵으로 읽습니다(문단마다 재조회하지 않도록 캐시해 씁니다). */
+function bulletCharsById(doc: HwpDocument): Map<number, string> {
+  const map = new Map<number, string>();
+  try {
+    const list = JSON.parse(doc.getBulletList()) as Array<{ id: number; char: string }>;
+    if (Array.isArray(list)) for (const b of list) if (b?.id) map.set(b.id, b.char);
+  } catch {
+    /* 글머리표 정의 없음 */
+  }
+  return map;
+}
+
+/** 문단의 머리 정보. 글머리표/번호가 없으면(headType=None) null. */
+function paragraphHead(doc: HwpDocument, section: number, para: number, bullets: Map<number, string>): ParaHead | null {
+  let props: { headType?: string; paraLevel?: number; numberingId?: number };
+  try {
+    props = JSON.parse(doc.getParaPropertiesAt(section, para));
+  } catch {
+    return null;
+  }
+  const headType = props.headType ?? 'None';
+  if (!headType || headType === 'None') return null;
+  const head: ParaHead = { headType, level: props.paraLevel ?? 0 };
+  if (props.numberingId) head.numberingId = props.numberingId;
+  if (headType === 'Bullet') {
+    const ch = props.numberingId === undefined ? undefined : bullets.get(props.numberingId);
+    if (ch) head.bulletChar = ch;
+  }
+  return head;
+}
+
+// 본문 텍스트에는 없지만 화면에는 보이는 기호를 검색/치환하려 할 때 모델에게 줄 안내.
+const HEAD_HINT =
+  '화면에 보이는 □·○ 같은 글머리표 기호가 문단 속성일 수 있습니다(본문 텍스트가 아니므로 검색·치환 대상이 아님). read_paragraphs 의 head 를 확인하고, 글머리표라면 set_paragraph_bullet 으로 바꾸세요.';
+
+// mm → applyParaFormat 의 문단 여백 단위. 셀 쪽(mmToHwpUnit)과 달리 HWPUNIT 의 1/2
+// 스케일입니다. core 0.7.19 실측: marginLeft 7200 입력 → HWPX 에 <hc:left value="3600"
+// unit="HWPUNIT"/> (=0.5인치)로 기록되고 렌더도 0.5인치 들여쓰기.
+function mmToParaMargin(mm: number): number {
+  return Math.round((mm * 14400) / 25.4);
+}
+
+// ── 여러 줄 → 여러 문단 ──
+// core 의 insertText 는 "\n" 을 문단 구분으로 보지 않고 한 문단 안의 강제 개행으로 넣습니다.
+// 글머리표·문단 서식은 문단 단위라서 그 상태로는 줄마다 다른 기호·크기를 줄 수 없습니다.
+// 그래서 줄 하나당 splitParagraph 로 실제 문단을 만들어 넣습니다.
+// 반환: 각 줄이 들어간 문단 인덱스 배열(줄 수와 길이가 같음).
+function insertLines(doc: HwpDocument, section: number, para: number, charOffset: number, lines: string[]): number[] {
+  const used: number[] = [];
+  let cur = para;
+  let off = charOffset;
+  for (let i = 0; i < lines.length; i++) {
+    if (i > 0) {
+      // 커서 뒤 내용은 새 문단으로 넘어갑니다(원래 문단의 꼬리는 마지막 줄 뒤에 남음).
+      const split = JSON.parse(doc.splitParagraph(section, cur, off)) as { ok?: boolean; paraIdx?: number };
+      if (split?.ok !== true || split.paraIdx === undefined) {
+        throw new Error(`문단 분리 실패 (문단 ${cur}, 오프셋 ${off})`);
+      }
+      cur = split.paraIdx;
+      off = 0;
+    }
+    if (lines[i].length > 0) {
+      if (!parseOk(doc.insertText(section, cur, off, lines[i]))) {
+        throw new Error(`텍스트 삽입 실패 (문단 ${cur}, 오프셋 ${off})`);
+      }
+      off += lines[i].length;
+    }
+    used.push(cur);
+  }
+  return used;
 }
 
 type TableRef = { section: number; paragraph: number; controlIdx: number; rows: number; cols: number };
@@ -361,7 +443,7 @@ function mergeTableProps(doc: HwpDocument, ref: TableRef, override: Record<strin
 }
 
 /**
- * HWP 문서 편집 도구 스펙 목록(28개). 문서는 서버의 HwpDocument 인스턴스(holder.doc)에 있으며,
+ * HWP 문서 편집 도구 스펙 목록(30개). 문서는 서버의 HwpDocument 인스턴스(holder.doc)에 있으며,
  * 각 execute 는 인프로세스로 이 인스턴스를 조회·편집합니다. provider 와 무관합니다.
  */
 export const HWP_TOOL_SPECS: HwpToolSpec[] = [
@@ -384,7 +466,7 @@ export const HWP_TOOL_SPECS: HwpToolSpec[] = [
 
   defineTool(
     'read_paragraphs',
-    `지정한 구역의 문단 텍스트를 읽습니다. 좌표계는 구역(section) → 문단(paragraph, 0-기반) → 글자 오프셋입니다. 한 번에 최대 ${MAX_PARAGRAPHS_PER_READ}개 문단까지 반환합니다.`,
+    `지정한 구역의 문단 텍스트를 읽습니다. 좌표계는 구역(section) → 문단(paragraph, 0-기반) → 글자 오프셋입니다. 한 번에 최대 ${MAX_PARAGRAPHS_PER_READ}개 문단까지 반환합니다. 문단에 글머리표·문단 번호가 걸려 있으면 head(headType/level/bulletChar)로 함께 알려줍니다 — head 의 기호는 문단 속성이라 text 에는 없습니다.`,
     {
       section: z.number().int().min(0).describe('구역 인덱스 (0-기반)'),
       start: z.number().int().min(0).describe('시작 문단 인덱스 (0-기반)'),
@@ -401,23 +483,38 @@ export const HWP_TOOL_SPECS: HwpToolSpec[] = [
         return errResult(`문단 ${args.start} 없음 (구역 ${args.section}에 총 ${paraCount}개).`);
       }
       const count = Math.min(args.count ?? MAX_PARAGRAPHS_PER_READ, paraCount - args.start);
+      const bullets = bulletCharsById(doc);
       const paragraphs = [];
+      let headCount = 0;
       for (let i = 0; i < count; i++) {
         const p = args.start + i;
-        const entry: { paragraph: number; text: string; tables?: Array<{ controlIdx: number; rows: number; cols: number }> } = {
+        const entry: {
+          paragraph: number;
+          text: string;
+          head?: ParaHead;
+          tables?: Array<{ controlIdx: number; rows: number; cols: number }>;
+        } = {
           paragraph: p,
           text: readParagraph(doc, args.section, p),
         };
+        const head = paragraphHead(doc, args.section, p, bullets);
+        if (head) { entry.head = head; headCount++; }
         const tables = tablesInParagraph(doc, args.section, p);
         if (tables.length > 0) entry.tables = tables.map(t => ({ controlIdx: t.controlIdx, rows: t.rows, cols: t.cols }));
         paragraphs.push(entry);
+      }
+      const hints = ['표(tables)가 표시된 문단의 셀 내용은 read_table 로 읽으세요.'];
+      if (headCount > 0) {
+        hints.push(
+          `head 가 있는 문단 ${headCount}개: 그 기호(bulletChar)는 문단 속성이라 text 에 없고 search_text/replace_text 로 찾거나 바꿀 수 없습니다. 기호를 바꾸거나 없애려면 set_paragraph_bullet 을 쓰세요.`,
+        );
       }
       return jsonResult({
         section: args.section,
         paragraphCount: paraCount,
         returned: { start: args.start, count },
         paragraphs,
-        hint: '표(tables)가 표시된 문단의 셀 내용은 read_table 로 읽으세요.',
+        hint: hints.join(' '),
       });
     },
   ),
@@ -434,7 +531,7 @@ export const HWP_TOOL_SPECS: HwpToolSpec[] = [
       const hit = JSON.parse(doc.searchText(args.query, 0, 0, 0, true, args.caseSensitive ?? false)) as {
         found: boolean; sec?: number; para?: number; charOffset?: number; length?: number;
       };
-      if (!hit.found || hit.sec === undefined || hit.para === undefined) return jsonResult({ found: false });
+      if (!hit.found || hit.sec === undefined || hit.para === undefined) return jsonResult({ found: false, hint: HEAD_HINT });
       return jsonResult({
         found: true, section: hit.sec, paragraph: hit.para, charOffset: hit.charOffset, length: hit.length,
         paragraphText: readParagraph(doc, hit.sec, hit.para),
@@ -491,12 +588,30 @@ export const HWP_TOOL_SPECS: HwpToolSpec[] = [
   // ────────────────── 본문 편집 도구 ──────────────────
   defineTool(
     'insert_text',
-    '지정한 위치(구역·문단·글자 오프셋)에 텍스트를 삽입합니다. 오프셋 0-기반. 편집 전 해당 문단을 읽어 위치를 확인하세요. 표 셀에는 set_cell 을 쓰세요.',
+    '지정한 위치(구역·문단·글자 오프셋)에 텍스트를 삽입합니다. 오프셋 0-기반. 편집 전 해당 문단을 읽어 위치를 확인하세요. 표 셀에는 set_cell 을 쓰세요. 줄바꿈(\\n)이 있으면 줄마다 **별도 문단**으로 나눠 넣고 사용된 문단 인덱스(paragraphs)를 돌려줍니다 — 그 인덱스로 줄마다 글머리표·서식을 걸 수 있습니다. 글머리표가 있는 계층 문서를 새로 만들 때는 insert_outline 이 더 편합니다.',
     { section: z.number().int().min(0), paragraph: z.number().int().min(0), charOffset: z.number().int().min(0), text: z.string().min(1) },
     (holder, args) => {
-      const raw = holder.doc.insertText(args.section, args.paragraph, args.charOffset, args.text);
-      if (parseOk(raw)) holder.dirty = true;
-      return textResult(raw);
+      const doc = holder.doc;
+      // \r\n·\r 도 줄바꿈으로 취급합니다(모델이 어떤 형태로 보내도 문단이 나뉘도록).
+      const lines = args.text.replace(/\r\n?/g, '\n').split('\n');
+      if (lines.length === 1) {
+        const raw = doc.insertText(args.section, args.paragraph, args.charOffset, args.text);
+        if (parseOk(raw)) holder.dirty = true;
+        return textResult(raw);
+      }
+      let used: number[];
+      try {
+        used = insertLines(doc, args.section, args.paragraph, args.charOffset, lines);
+      } catch (e) {
+        return errResult(e instanceof Error ? e.message : String(e));
+      }
+      holder.dirty = true;
+      return jsonResult({
+        ok: true,
+        section: args.section,
+        paragraphs: used,
+        note: `줄바꿈 ${lines.length - 1}개를 문단 ${lines.length}개로 나눠 넣었습니다. 줄마다 글머리표·서식을 주려면 이 paragraphs 인덱스를 쓰세요.`,
+      });
     },
   ),
 
@@ -521,7 +636,7 @@ export const HWP_TOOL_SPECS: HwpToolSpec[] = [
         found: boolean; sec?: number; para?: number; charOffset?: number; length?: number;
       };
       if (!hit.found || hit.sec === undefined || hit.para === undefined || hit.charOffset === undefined || hit.length === undefined) {
-        return { ...jsonResult({ ok: false, reason: 'not_found', query: args.query }), isError: true };
+        return { ...jsonResult({ ok: false, reason: 'not_found', query: args.query, hint: HEAD_HINT }), isError: true };
       }
       const del = doc.deleteText(hit.sec, hit.para, hit.charOffset, hit.length);
       if (!parseOk(del)) return errResult(del);
@@ -531,6 +646,176 @@ export const HWP_TOOL_SPECS: HwpToolSpec[] = [
       }
       if (ok) holder.dirty = true;
       return jsonResult({ ok, section: hit.sec, paragraph: hit.para, replaced: args.query, with: args.replacement, paragraphText: readParagraph(doc, hit.sec, hit.para) });
+    },
+  ),
+
+  defineTool(
+    'insert_outline',
+    '글머리표 계층(트리) 문서를 한 번에 만듭니다. items 의 각 항목이 **문단 하나**가 되고, 항목마다 글머리표(bullet)·수준(level)·글자크기(fontSize)·굵게(bold)를 지정할 수 있습니다. 들여쓰기는 level×indentMmPerLevel(기본 5mm ≒ 스페이스 1~2칸)로 자동 적용되며 indentMm 으로 항목별 직접 지정도 됩니다. "네모-동그라미-하이픈 3단 트리에 글자크기 17-15-13" 같은 요청은 이 도구 한 번으로 끝내세요 — insert_text 로 기호를 타이핑하거나 문단을 따로 나눌 필요가 없습니다.',
+    {
+      section: z.number().int().min(0).describe('구역 인덱스 (0-기반)'),
+      paragraph: z.number().int().min(0).describe('넣을 시작 문단 인덱스 (0-기반). 첫 항목이 이 문단에 들어가고 나머지는 뒤에 새 문단으로 이어집니다'),
+      charOffset: z.number().int().min(0).optional().describe('시작 문단 안 글자 오프셋 (기본 0)'),
+      items: z.array(z.object({
+        text: z.string().describe('그 줄의 내용(기호는 넣지 마세요 — bullet 이 글머리표로 붙습니다)'),
+        level: z.number().int().min(0).max(6).optional().describe('수준 (0-기반, 기본 0)'),
+        bullet: z.string().min(1).max(4).optional().describe('글머리표 문자(네모=□, 동그라미=○, 점=·, 하이픈=-). 생략하면 글머리표 없음'),
+        fontSize: z.number().positive().max(300).optional().describe('글자 크기 (pt)'),
+        bold: z.boolean().optional().describe('굵게'),
+        indentMm: z.number().min(0).max(200).optional().describe('왼쪽 들여쓰기(mm) 직접 지정. 생략 시 level×indentMmPerLevel'),
+      })).min(1).max(MAX_OUTLINE_ITEMS).describe(`계층 항목 목록 (최대 ${MAX_OUTLINE_ITEMS}개)`),
+      indentMmPerLevel: z.number().min(0).max(50).optional().describe('수준 1단당 들여쓰기 (mm, 기본 5)'),
+    },
+    (holder, args) => {
+      const doc = holder.doc;
+      const sectionCount = doc.getSectionCount();
+      if (args.section >= sectionCount) {
+        return errResult(`구역 ${args.section} 없음 (총 ${sectionCount}개).`);
+      }
+      const paraCount = doc.getParagraphCount(args.section);
+      if (args.paragraph >= paraCount) {
+        return errResult(`문단 ${args.paragraph} 없음 (구역 ${args.section}에 총 ${paraCount}개). 문서 끝에 붙이려면 마지막 문단 인덱스를 쓰세요.`);
+      }
+      const step = args.indentMmPerLevel ?? DEFAULT_INDENT_MM_PER_LEVEL;
+
+      // 항목 텍스트 안의 줄바꿈도 문단으로 나누고, 나뉜 줄들은 그 항목의 서식을 함께 받습니다.
+      const lines: string[] = [];
+      const ownerOfLine: number[] = [];
+      args.items.forEach((item, idx) => {
+        for (const line of item.text.replace(/\r\n?/g, '\n').split('\n')) {
+          lines.push(line);
+          ownerOfLine.push(idx);
+        }
+      });
+
+      let used: number[];
+      try {
+        used = insertLines(doc, args.section, args.paragraph, args.charOffset ?? 0, lines);
+      } catch (e) {
+        return errResult(e instanceof Error ? e.message : String(e));
+      }
+      holder.dirty = true;
+
+      const applied: Array<{ paragraph: number; level: number; bullet?: string; fontSize?: number; indentMm: number }> = [];
+      const warnings: string[] = [];
+      used.forEach((p, li) => {
+        const item = args.items[ownerOfLine[li]];
+        const level = item.level ?? 0;
+        const indentMm = item.indentMm ?? level * step;
+
+        // 내용 없는 줄(빈 항목이나 줄바꿈으로 생긴 빈 줄)에는 글머리표를 달지 않습니다.
+        // 기호만 덩그러니 남은 줄이 생기기 때문입니다. 간격용 빈 줄로 그대로 둡니다.
+        const isBlank = lines[li].length === 0;
+        const props: Record<string, unknown> = { paraLevel: level, marginLeft: mmToParaMargin(indentMm) };
+        if (item.bullet && !isBlank) {
+          const ch = [...item.bullet.trim()][0];
+          const bulletId = ch ? doc.ensureDefaultBullet(ch) : 0;
+          if (bulletId) {
+            props.headType = 'Bullet';
+            props.numberingId = bulletId;
+          } else {
+            warnings.push(`문단 ${p}: 글머리표 '${item.bullet}' 정의 실패`);
+          }
+        }
+        if (!parseOk(doc.applyParaFormat(args.section, p, JSON.stringify(props)))) {
+          warnings.push(`문단 ${p}: 문단 서식 적용 실패`);
+        }
+
+        // 글자 서식은 그 문단 전체에 적용합니다(빈 줄은 적용할 글자가 없으므로 건너뜀).
+        const { props: charProps, applied: charApplied } = buildCharProps(doc, { fontSize: item.fontSize, bold: item.bold });
+        if (charApplied.length > 0) {
+          const len = doc.getParagraphLength(args.section, p);
+          if (len > 0 && !parseOk(doc.applyCharFormat(args.section, p, 0, len, JSON.stringify(charProps)))) {
+            warnings.push(`문단 ${p}: 글자 서식 적용 실패`);
+          }
+        }
+        applied.push({
+          paragraph: p,
+          level,
+          // 실제로 붙은 글머리표만 보고합니다(빈 줄은 없음).
+          bullet: props.headType === 'Bullet' ? (props.numberingId ? [...(item.bullet as string).trim()][0] : undefined) : undefined,
+          fontSize: item.fontSize,
+          indentMm,
+        });
+      });
+
+      return jsonResult({
+        ok: warnings.length === 0,
+        section: args.section,
+        paragraphs: applied,
+        indentMmPerLevel: step,
+        warnings: warnings.length > 0 ? warnings : undefined,
+      });
+    },
+  ),
+
+  defineTool(
+    'set_paragraph_bullet',
+    '본문 문단의 글머리표(□·○··-)를 지정/변경/제거합니다. 글머리표는 문단 속성이므로 본문 텍스트에 들어가지 않습니다 — 화면에 보이는 기호가 read_paragraphs 의 text 에 없고 head 에만 있으면 replace_text 로는 절대 못 바꾸고 이 도구로 바꿔야 합니다. endParagraph 를 주면 그 범위 문단 전체에 적용합니다. 계층(트리) 구조를 만들 땐 level 과 indentMm 을 함께 주세요 — level 만으로는 들여쓰기가 되지 않습니다(권장: 수준 0/1/2/3 → indentMm 0/5/10/15). 표 셀 안 문단은 대상이 아닙니다.',
+    {
+      section: z.number().int().min(0).describe('구역 인덱스 (0-기반)'),
+      paragraph: z.number().int().min(0).describe('시작 문단 인덱스 (0-기반)'),
+      endParagraph: z.number().int().min(0).optional().describe('끝 문단 인덱스(포함). 생략 시 paragraph 한 문단만'),
+      char: z.string().min(1).max(4).optional().describe('글머리표 문자. 네모=□, 검정네모=■, 동그라미=○, 검정동그라미=●, 작은동그라미=◦, 점=·, 하이픈=-, 다이아=◆, 삼각=▶. remove 를 쓸 때는 생략'),
+      level: z.number().int().min(0).max(6).optional().describe('문단 수준 (0-기반, 기본 0)'),
+      indentMm: z.number().min(0).max(200).optional().describe('왼쪽 들여쓰기 (mm). 생략하면 문단 여백을 건드리지 않습니다'),
+      remove: z.boolean().optional().describe('true 면 글머리표를 제거합니다(headType=None)'),
+    },
+    (holder, args) => {
+      const doc = holder.doc;
+      const sectionCount = doc.getSectionCount();
+      if (args.section >= sectionCount) {
+        return errResult(`구역 ${args.section} 없음 (총 ${sectionCount}개).`);
+      }
+      const paraCount = doc.getParagraphCount(args.section);
+      if (args.paragraph >= paraCount) {
+        return errResult(`문단 ${args.paragraph} 없음 (구역 ${args.section}에 총 ${paraCount}개).`);
+      }
+      const end = args.endParagraph ?? args.paragraph;
+      if (end < args.paragraph) {
+        return errResult(`endParagraph(${end}) 가 paragraph(${args.paragraph}) 보다 앞입니다.`);
+      }
+      const last = Math.min(end, paraCount - 1);
+      const remove = args.remove === true;
+      // 글머리표 문자는 코드포인트 1개만 씁니다(모델이 "□ " 처럼 공백을 붙여 보내도 안전하게).
+      const char = remove ? undefined : [...(args.char ?? '').trim()][0];
+      if (!remove && !char) {
+        return errResult('char(글머리표 문자) 또는 remove:true 중 하나가 필요합니다.');
+      }
+
+      const props: Record<string, unknown> = {};
+      let bulletId: number | undefined;
+      if (remove) {
+        props.headType = 'None';
+      } else {
+        // 같은 문자의 정의가 이미 있으면 그 ID 를 재사용합니다(문서에 중복 정의가 쌓이지 않음).
+        bulletId = doc.ensureDefaultBullet(char as string);
+        if (!bulletId) return errResult(`글머리표 정의를 만들 수 없습니다: ${char}`);
+        props.headType = 'Bullet';
+        props.numberingId = bulletId;
+        props.paraLevel = args.level ?? 0;
+      }
+      if (args.indentMm !== undefined) props.marginLeft = mmToParaMargin(args.indentMm);
+
+      const json = JSON.stringify(props);
+      const applied: number[] = [];
+      const failed: number[] = [];
+      for (let p = args.paragraph; p <= last; p++) {
+        if (parseOk(doc.applyParaFormat(args.section, p, json))) applied.push(p);
+        else failed.push(p);
+      }
+      if (applied.length > 0) holder.dirty = true;
+      return jsonResult({
+        ok: failed.length === 0 && applied.length > 0,
+        section: args.section,
+        paragraphs: applied,
+        failed: failed.length > 0 ? failed : undefined,
+        truncated: end > last ? `문단 ${last} 까지만 적용(구역에 총 ${paraCount}개)` : undefined,
+        ...(remove
+          ? { removed: true }
+          : { bulletChar: char, bulletId, level: args.level ?? 0 }),
+        indentMm: args.indentMm,
+      });
     },
   ),
 

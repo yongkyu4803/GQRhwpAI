@@ -41,6 +41,8 @@ const TOOL_LABELS: Record<string, string> = {
   mcp__hwp__insert_text: '텍스트 삽입',
   mcp__hwp__delete_range: '범위 삭제',
   mcp__hwp__replace_text: '텍스트 교체',
+  mcp__hwp__insert_outline: '계층 문서 작성',
+  mcp__hwp__set_paragraph_bullet: '글머리표 설정',
   mcp__hwp__insert_table: '표 삽입',
   mcp__hwp__list_tables: '표 목록 확인',
   mcp__hwp__read_table: '표 읽기',
