@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 
+import Markdown from './Markdown';
+
 type ChatEvent =
   | { type: 'system'; sessionId: string }
   | { type: 'text'; text: string }
@@ -366,8 +368,8 @@ export default function ChatPanel({ getDocBytes, onApplyEdit, docId, onClose }: 
                 </div>
               ))}
               {turn.text && (
-                <div className="px-3 py-2 rounded-2xl rounded-bl-sm bg-zinc-100 dark:bg-zinc-700 text-zinc-800 dark:text-zinc-100 text-sm whitespace-pre-wrap break-words">
-                  {turn.text}
+                <div className="px-3 py-2 rounded-2xl rounded-bl-sm bg-zinc-100 dark:bg-zinc-700 text-zinc-800 dark:text-zinc-100 text-sm leading-relaxed break-words">
+                  <Markdown text={turn.text} />
                 </div>
               )}
               {turn.edited && (
