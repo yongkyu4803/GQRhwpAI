@@ -3,6 +3,8 @@ import 'server-only';
 import { z } from 'zod';
 import type { HwpDocument } from '@rhwp/core';
 
+import { BULLET_SAFE_FONTS, isBulletUnsafeFont, isShapeBulletChar } from './font-coverage';
+
 // 문서 인스턴스를 홀더로 감쌉니다. 편집이 일어나면 dirty 를 세워 라우트가
 // 턴 종료 후 문서를 export 해 클라이언트로 되돌려 보낼지 판단합니다.
 export type DocHolder = { doc: HwpDocument; dirty: boolean };
@@ -117,6 +119,18 @@ const HEAD_HINT =
 // unit="HWPUNIT"/> (=0.5인치)로 기록되고 렌더도 0.5인치 들여쓰기.
 function mmToParaMargin(mm: number): number {
   return Math.round((mm * 14400) / 25.4);
+}
+
+/**
+ * 그 글꼴을 적용하면 문서의 글머리표 기호가 화면에서 사라지는 경우 경고 문구를 만듭니다.
+ * 글리프가 없으면 조용히 안 보이기만 해서(오류가 없음) 모델·사용자가 알아채기 어렵습니다.
+ */
+function bulletFontWarning(doc: HwpDocument, fontName?: string): string | undefined {
+  if (!fontName || !isBulletUnsafeFont(fontName)) return undefined;
+  const chars = [...bulletCharsById(doc).values()].filter(isShapeBulletChar);
+  if (chars.length === 0) return undefined;
+  const unique = [...new Set(chars)].join('');
+  return `주의: "${fontName}" 웹폰트에는 글머리표 기호(${unique}) 글리프가 없어 화면에서 기호가 보이지 않습니다(문서 데이터는 그대로 유지). 기호를 보이게 하려면 ${BULLET_SAFE_FONTS.slice(0, 3).join('/')} 같은 글꼴을 쓰거나, 사용자에게 이 사실을 알리세요.`;
 }
 
 // ── 여러 줄 → 여러 문단 ──
@@ -282,7 +296,7 @@ function replaceCellText(doc: HwpDocument, ref: TableRef, cellIdx: number, text:
 
 // 글자 서식 입력(모두 선택). fontSize 는 사용자 친화적으로 pt 단위로 받습니다.
 const FORMAT_FIELDS = {
-  fontName: z.string().optional().describe('글꼴 이름 (예: "맑은 고딕"). 한글·라틴 글자에 적용됩니다.'),
+  fontName: z.string().optional().describe('글꼴 이름 (예: "맑은 고딕"). 한글·라틴 글자에 적용됩니다. 바탕·나눔고딕·궁서·HY신명조 계열은 웹폰트에 □·○ 글리프가 없어 글머리표가 화면에서 사라집니다 — 글머리표가 있는 문서에는 함초롬바탕/맑은 고딕 등을 쓰세요.'),
   fontSize: z.number().positive().max(300).optional().describe('글자 크기 (pt, 예: 20)'),
   bold: z.boolean().optional(),
   italic: z.boolean().optional(),
@@ -443,7 +457,7 @@ function mergeTableProps(doc: HwpDocument, ref: TableRef, override: Record<strin
 }
 
 /**
- * HWP 문서 편집 도구 스펙 목록(30개). 문서는 서버의 HwpDocument 인스턴스(holder.doc)에 있으며,
+ * HWP 문서 편집 도구 스펙 목록(31개). 문서는 서버의 HwpDocument 인스턴스(holder.doc)에 있으며,
  * 각 execute 는 인프로세스로 이 인스턴스를 조회·편집합니다. provider 와 무관합니다.
  */
 export const HWP_TOOL_SPECS: HwpToolSpec[] = [
@@ -819,6 +833,62 @@ export const HWP_TOOL_SPECS: HwpToolSpec[] = [
     },
   ),
 
+  defineTool(
+    'set_paragraph_indent',
+    '이미 있는 본문 문단의 들여쓰기·여백을 mm 단위로 바꿉니다. indentMm=왼쪽 여백(계층 들여쓰기), firstLineMm=첫 줄만 더 들여쓰기(양수) 또는 내어쓰기(음수), rightMm=오른쪽 여백. endParagraph 로 범위 적용. 글머리표 기호·수준은 그대로 두고 위치만 조정합니다(기호를 바꾸려면 set_paragraph_bullet). 계층 문서를 새로 만들 때는 insert_outline 이 들여쓰기까지 함께 처리합니다.',
+    {
+      section: z.number().int().min(0).describe('구역 인덱스 (0-기반)'),
+      paragraph: z.number().int().min(0).describe('시작 문단 인덱스 (0-기반)'),
+      endParagraph: z.number().int().min(0).optional().describe('끝 문단 인덱스(포함). 생략 시 한 문단만'),
+      indentMm: z.number().min(0).max(200).optional().describe('왼쪽 여백 (mm)'),
+      firstLineMm: z.number().min(-200).max(200).optional().describe('첫 줄 들여쓰기 (mm). 음수면 내어쓰기(첫 줄이 왼쪽으로 나오고 둘째 줄부터 들여쓰기)'),
+      rightMm: z.number().min(0).max(200).optional().describe('오른쪽 여백 (mm)'),
+    },
+    (holder, args) => {
+      const doc = holder.doc;
+      const sectionCount = doc.getSectionCount();
+      if (args.section >= sectionCount) {
+        return errResult(`구역 ${args.section} 없음 (총 ${sectionCount}개).`);
+      }
+      const paraCount = doc.getParagraphCount(args.section);
+      if (args.paragraph >= paraCount) {
+        return errResult(`문단 ${args.paragraph} 없음 (구역 ${args.section}에 총 ${paraCount}개).`);
+      }
+      const end = args.endParagraph ?? args.paragraph;
+      if (end < args.paragraph) {
+        return errResult(`endParagraph(${end}) 가 paragraph(${args.paragraph}) 보다 앞입니다.`);
+      }
+      const last = Math.min(end, paraCount - 1);
+
+      const props: Record<string, unknown> = {};
+      if (args.indentMm !== undefined) props.marginLeft = mmToParaMargin(args.indentMm);
+      if (args.firstLineMm !== undefined) props.indent = mmToParaMargin(args.firstLineMm);
+      if (args.rightMm !== undefined) props.marginRight = mmToParaMargin(args.rightMm);
+      if (Object.keys(props).length === 0) {
+        return errResult('indentMm·firstLineMm·rightMm 중 하나 이상이 필요합니다.');
+      }
+
+      const json = JSON.stringify(props);
+      const applied: number[] = [];
+      const failed: number[] = [];
+      for (let p = args.paragraph; p <= last; p++) {
+        if (parseOk(doc.applyParaFormat(args.section, p, json))) applied.push(p);
+        else failed.push(p);
+      }
+      if (applied.length > 0) holder.dirty = true;
+      return jsonResult({
+        ok: failed.length === 0 && applied.length > 0,
+        section: args.section,
+        paragraphs: applied,
+        failed: failed.length > 0 ? failed : undefined,
+        truncated: end > last ? `문단 ${last} 까지만 적용(구역에 총 ${paraCount}개)` : undefined,
+        indentMm: args.indentMm,
+        firstLineMm: args.firstLineMm,
+        rightMm: args.rightMm,
+      });
+    },
+  ),
+
   // ────────────────── 표: 생성·읽기 ──────────────────
   defineTool(
     'insert_table',
@@ -1014,7 +1084,7 @@ export const HWP_TOOL_SPECS: HwpToolSpec[] = [
         applied.push(`정렬=${args.align}`);
       }
       if (ok) holder.dirty = true;
-      return jsonResult({ ok, section: args.section, paragraph: args.paragraph, applied });
+      return jsonResult({ ok, section: args.section, paragraph: args.paragraph, applied, warning: bulletFontWarning(doc, args.fontName) });
     },
   ),
 
@@ -1038,7 +1108,7 @@ export const HWP_TOOL_SPECS: HwpToolSpec[] = [
       if (applied.length > 0) ok = formatCellRuns(doc, ref, cellIdx, JSON.stringify(props)) || ok;
       if (args.align) { ok = alignCellParas(doc, ref, cellIdx, args.align) || ok; applied.push(`정렬=${args.align}`); }
       if (ok) holder.dirty = true;
-      return jsonResult({ ok, section: ref.section, paragraph: ref.paragraph, controlIdx: ref.controlIdx, row: args.row, col: args.col, applied });
+      return jsonResult({ ok, section: ref.section, paragraph: ref.paragraph, controlIdx: ref.controlIdx, row: args.row, col: args.col, applied, warning: bulletFontWarning(doc, args.fontName) });
     },
   ),
 
@@ -1065,7 +1135,7 @@ export const HWP_TOOL_SPECS: HwpToolSpec[] = [
       }
       if (args.align) applied.push(`정렬=${args.align}`);
       if (cells > 0) holder.dirty = true;
-      return jsonResult({ ok: cells > 0, section: ref.section, paragraph: ref.paragraph, controlIdx: ref.controlIdx, cellsFormatted: cells, applied });
+      return jsonResult({ ok: cells > 0, section: ref.section, paragraph: ref.paragraph, controlIdx: ref.controlIdx, cellsFormatted: cells, applied, warning: bulletFontWarning(doc, args.fontName) });
     },
   ),
 

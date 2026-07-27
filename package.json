@@ -7,7 +7,8 @@
     "dev": "next dev -p 3007",
     "build": "next build",
     "start": "next start -p 3007",
-    "lint": "eslint"
+    "lint": "eslint",
+    "fonts:coverage": "node scripts/font-glyph-coverage.mjs"
   },
   "dependencies": {
     "@ai-sdk/google": "^4.0.22",
